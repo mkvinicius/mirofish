@@ -198,15 +198,19 @@ Entity: %s (type: %s)
 Description: %s%s
 Simulation scenario: %s
 
-Create a concrete individual who represents this group. They should embody the typical characteristics,
-values, and perspectives of this group entity.
+Create a DIVERSE, PSYCHOLOGICALLY RICH individual who represents this group. They should be a specific person
+with a unique background, not a generic archetype. Consider their:
+- Core fears (what keeps them up at night regarding the simulation topic)
+- Core motivations (what drives their participation in this conversation)
+- Social media behavior (why they use social media, what they want from it)
+- Contradictions or nuances in their worldview
 
 Return ONLY valid JSON:
 {
   "user_name": "username_no_spaces",
   "name": "Full Display Name",
-  "bio": "Twitter/Reddit bio, 1-2 sentences, in first person",
-  "persona": "Detailed 3-5 sentence description of personality, background, motivations, and typical behaviors. Include their relationship to the simulation scenario.",
+  "bio": "Twitter/Reddit bio, 1-2 sentences, in first person — authentic voice, not generic",
+  "persona": "2-3 sentences of behavioral description: how they act online, their communication style, what triggers them, how they engage with opposing views. Make it vivid and specific.",
   "age": 28,
   "gender": "male|female|non-binary",
   "mbti": "INTJ",
@@ -229,7 +233,8 @@ Return ONLY valid JSON:
 
 stance must be one of: supportive, opposing, neutral, observer
 sentiment_bias: -1.0 (very negative) to 1.0 (very positive)
-activity_level: 0.0 to 1.0`,
+activity_level: 0.0 to 1.0
+Be creative — avoid generic profiles. Each agent should feel like a real, distinct human being.`,
 			node.Name, node.Type, node.Summary, edgeContext, simRequirement)
 	} else {
 		prompt = fmt.Sprintf(`Create a detailed social media user profile for this specific entity.
@@ -237,12 +242,19 @@ Entity: %s (type: %s)
 Description: %s%s
 Simulation scenario: %s
 
+Create a PSYCHOLOGICALLY DEEP, REALISTIC individual. Go beyond surface-level attributes. Consider:
+- What are their core fears related to this simulation topic?
+- What do they want from social media — validation, information, influence, connection?
+- What is their communication style — aggressive, measured, sarcastic, earnest?
+- What life experiences shaped their current stance?
+- Do they have any internal contradictions or nuances?
+
 Return ONLY valid JSON:
 {
   "user_name": "username_no_spaces",
   "name": "Full Display Name",
-  "bio": "Bio in first person, 1-2 sentences",
-  "persona": "3-5 sentences: personality, background, motivations, stance on the simulation scenario",
+  "bio": "Bio in first person, 1-2 sentences — sounds like a real person, not a corporate description",
+  "persona": "2-3 sentences of behavioral description: their online behavior patterns, emotional triggers, communication tendencies, and what motivates them to post or engage. Be specific and vivid.",
   "age": 35,
   "gender": "male|female|non-binary",
   "mbti": "ENFP",
@@ -261,7 +273,8 @@ Return ONLY valid JSON:
   "influence_weight": 1.5,
   "response_delay_min": 5,
   "response_delay_max": 30
-}`,
+}
+Be creative — avoid generic profiles. Each agent should feel like a real, distinct human being.`,
 			node.Name, node.Type, node.Summary, edgeContext, simRequirement)
 	}
 

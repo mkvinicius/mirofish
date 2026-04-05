@@ -120,7 +120,8 @@ Return ONLY valid JSON:
 {"entity_types": ["Type1","Type2",...], "relation_types": ["RELATION1","RELATION2",...]}
 
 Rules:
-- 6-10 specific entity types relevant to the content
+- 8-15 specific entity types relevant to the content
+- Extract granular individual entities — specific people, named organizations, distinct user personas (e.g. 'Small Clinic Manager', 'Independent Physician', 'Insurance Company Executive'), and concrete concepts. Prefer many specific entities over few generic ones.
 - 4-8 relation types in UPPER_SNAKE_CASE
 - No explanation, just JSON
 
@@ -144,6 +145,13 @@ func extractEntities(ctx context.Context, projectID, document string, ont *ontol
 Entity types available: %s
 Relation types available: %s
 
+Instructions:
+- Extract EVERY distinct entity mentioned or implied in the document.
+- For people/personas, create individual entries for each distinct role or perspective.
+- Aim for 20-40 entities minimum if the document supports it.
+- For each entity, also extract implicit stakeholders who would be affected.
+- Do not merge distinct roles or perspectives into one entity — keep them separate.
+
 Return ONLY valid JSON:
 {
   "entities": [
@@ -161,7 +169,7 @@ Document:
 		trunc(document, 5000))
 
 	resp, err := llm.Chat(ctx, []llm.Message{llm.User(prompt)},
-		llm.WithTemperature(0.2), llm.WithMaxTokens(8192))
+		llm.WithTemperature(0.2), llm.WithMaxTokens(16000))
 	if err != nil {
 		return nil, nil, err
 	}

@@ -58,19 +58,21 @@ type Post struct {
 }
 
 type AgentAction struct {
-	ID         string `json:"id"`
-	ProjectID  string `json:"project_id"`
-	SimID      string `json:"simulation_id"`
-	AgentID    string `json:"agent_id"`
-	AgentName  string `json:"agent_name"`
-	Platform   string `json:"platform"`
-	ActionType string `json:"action_type"`
-	Content    string `json:"content"`
-	Round      int    `json:"round"`
-	SimHour    int    `json:"sim_hour"`
-	TargetID   string `json:"target_id"`
-	Success    bool   `json:"success"`
-	Timestamp  string `json:"timestamp"`
+	ID           string `json:"id"`
+	ProjectID    string `json:"project_id"`
+	SimID        string `json:"simulation_id"`
+	AgentID      string `json:"agent_id"`
+	AgentName    string `json:"agent_name"`
+	Platform     string `json:"platform"`
+	ActionType   string `json:"action_type"`
+	Content      string `json:"content"`
+	Round        int    `json:"round"`
+	SimHour      int    `json:"sim_hour"`
+	TargetID     string `json:"target_id"`
+	Success      bool   `json:"success"`
+	Timestamp    string `json:"timestamp"`
+	ReplyTo      string `json:"reply_to,omitempty"`      // @username being replied to
+	ReplyContent string `json:"reply_content,omitempty"` // content of post being replied to
 }
 
 // AgentMemory stores an agent's recent experiences for context.
@@ -514,33 +516,74 @@ func persistMemories(projectID string, memories map[string]*AgentMemory) {
 }
 
 // agentAct decides an action for one agent using LLM.
-// Replicates OASIS agent decision logic.
+// Replicates OASIS agent decision logic with chain-of-thought reasoning.
 func (m *Manager) agentAct(ctx context.Context, agent *OasisAgentProfile,
 	platform, topic string, world *World, mem *AgentMemory, round, simHour int) *AgentAction {
 
-	// Get feed context (recent posts the agent would see)
-	feed := world.getFeed(agent.ID, platform, 5, agent)
+	// Get feed context (recent posts the agent would see) — 8 posts, 200 char truncation
+	feed := world.getFeed(agent.ID, platform, 8, agent)
 	feedText := ""
 	for _, p := range feed {
 		feedText += fmt.Sprintf("- @%s: %s [👍%d 🔄%d]\n",
-			p.AuthorName, trunc(p.Content, 100), p.LikeCount, p.RepostCount)
+			p.AuthorName, trunc(p.Content, 200), p.LikeCount, p.RepostCount)
 	}
 	if feedText == "" {
 		feedText = "(No posts yet — you could be among the first to post)"
 	}
 
-	// Get relevant memories
-	memCtx := ""
+	// Get semantically relevant memories using current topic as query
+	var memCtx string
 	if len(mem.Memories) > 0 {
+		queryEmb, err := llm.Embed(ctx, fmt.Sprintf("%s hour %d", topic, simHour))
+		if err == nil && len(queryEmb) > 0 {
+			relevant := RetrieveRelevantMemories(mem, queryEmb, 4)
+			for _, mr := range relevant {
+				memCtx += fmt.Sprintf("- [H%d] %s\n", mr.SimHour, trunc(mr.Content, 100))
+			}
+		}
+	}
+	if memCtx == "" && len(mem.Memories) > 0 {
+		// fallback to recent
 		n := 3
 		if len(mem.Memories) < n {
 			n = len(mem.Memories)
 		}
 		recent := mem.Memories[len(mem.Memories)-n:]
 		for _, mr := range recent {
-			memCtx += fmt.Sprintf("- [H%d] %s\n", mr.SimHour, trunc(mr.Content, 80))
+			memCtx += fmt.Sprintf("- [H%d] %s\n", mr.SimHour, trunc(mr.Content, 100))
 		}
 	}
+
+	// ── Step 1: Internal monologue (chain-of-thought) ──────────────────────
+	thinkPrompt := fmt.Sprintf(`You are %s (@%s), %s, %s.
+Bio: %s
+MBTI: %s | Stance: %s | Sentiment: %s
+
+Simulation topic: %s | Time: %02d:00
+
+Your relevant memories:
+%s
+
+What you see in your feed:
+%s
+
+Think deeply as this person. Write 2-3 sentences of internal thought:
+- How do you feel about what you're seeing?
+- Does anything in the feed provoke you, inspire you, or concern you?
+- What is on your mind right now, in character?
+
+Respond with ONLY your internal thoughts, in first person, no JSON.`,
+		agent.Name, agent.UserName, agent.Profession, agent.Country,
+		agent.Bio, agent.MBTI, agent.Stance, sentimentLabel(agent.SentimentBias),
+		topic, simHour, memCtx, feedText)
+
+	thoughts, err := llm.Chat(ctx, []llm.Message{llm.User(thinkPrompt)},
+		llm.WithTemperature(0.85), llm.WithMaxTokens(150))
+	if err != nil {
+		thoughts = ""
+	}
+
+	// ── Step 2: Action decision (informed by internal thoughts) ───────────
 
 	// Determine available actions based on platform
 	var actionList string
@@ -558,6 +601,20 @@ func (m *Manager) agentAct(ctx context.Context, agent *OasisAgentProfile,
 	}
 	stanceDesc := stanceMap[agent.Stance]
 
+	// Determine reply target: pick most relevant post from feed
+	replyTargetText := ""
+	var replyTargetPost *Post
+	if len(feed) > 0 {
+		replyTargetPost = feed[0]
+		replyTargetText = fmt.Sprintf("\nIf you choose to reply/comment, you are replying to: @%s: %s",
+			replyTargetPost.AuthorName, trunc(replyTargetPost.Content, 200))
+	}
+
+	thoughtsSection := ""
+	if thoughts != "" {
+		thoughtsSection = fmt.Sprintf("\nYour internal thoughts right now:\n%s\n", thoughts)
+	}
+
 	prompt := fmt.Sprintf(`You are %s (@%s), a %d-year-old %s on %s.
 Bio: %s
 Persona: %s
@@ -570,25 +627,28 @@ Current simulated time: %02d:00
 
 Your recent activity:
 %s
-
+%s
 Current feed on %s:
 %s
-
+%s
 Available actions: %s
 
 Decide what to do. Respond with JSON:
 {
   "action": "ACTION_TYPE",
   "content": "your post/comment text (only if action creates content)",
+  "reply_to": "@username you are replying to (only if replying)",
   "target_post": "brief description of which post you're interacting with (if applicable)",
-  "reasoning": "brief internal reasoning (1 sentence)"
+  "reasoning": "brief internal reasoning (1 sentence)",
+  "stance_shift": 0.0
 }
 
 Rules:
 - Stay completely in character
 - Content should be 1-3 sentences, authentic to your personality
 - If DO_NOTHING, content can be empty
-- Your stance should influence your content direction`,
+- Your stance should influence your content direction
+- stance_shift: float between -0.3 and 0.3 (how much this interaction shifts your sentiment; 0 = no change)`,
 		agent.Name, agent.UserName, agent.Age, agent.Profession, platform,
 		agent.Bio, trunc(agent.Persona, 200),
 		stanceDesc,
@@ -596,22 +656,31 @@ Rules:
 		agent.MBTI, agent.Country,
 		topic, simHour,
 		memCtx,
+		thoughtsSection,
 		platform, feedText,
+		replyTargetText,
 		actionList)
 
 	resp, err := llm.Chat(ctx, []llm.Message{llm.User(prompt)},
-		llm.WithTemperature(0.9), llm.WithMaxTokens(400))
+		llm.WithTemperature(0.9), llm.WithMaxTokens(600))
 	if err != nil {
 		return nil
 	}
 
 	var raw struct {
-		Action    string `json:"action"`
-		Content   string `json:"content"`
-		Reasoning string `json:"reasoning"`
+		Action      string  `json:"action"`
+		Content     string  `json:"content"`
+		ReplyTo     string  `json:"reply_to"`
+		Reasoning   string  `json:"reasoning"`
+		StanceShift float64 `json:"stance_shift"`
 	}
 	if err := llm.ParseJSON(resp, &raw); err != nil {
 		return nil
+	}
+
+	// Apply stance evolution
+	if raw.StanceShift != 0 {
+		agent.SentimentBias = clampF(agent.SentimentBias+raw.StanceShift, -1.0, 1.0)
 	}
 
 	action := &AgentAction{
@@ -626,6 +695,15 @@ Rules:
 		SimHour:    simHour,
 		Success:    true,
 		Timestamp:  time.Now().Format(time.RFC3339),
+		ReplyTo:    raw.ReplyTo,
+	}
+
+	// Attach reply content if replying to a specific post
+	if replyTargetPost != nil && (action.ActionType == ActionReplyPost || action.ActionType == ActionComment) {
+		if action.ReplyTo == "" {
+			action.ReplyTo = "@" + replyTargetPost.AuthorName
+		}
+		action.ReplyContent = trunc(replyTargetPost.Content, 200)
 	}
 
 	// Apply action to world state
