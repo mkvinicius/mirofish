@@ -52,6 +52,12 @@ func projectsSubrouter(w http.ResponseWriter, req *http.Request) {
 		handleGetSimulationActions(w, req)
 	case isReportGenerate(path) && req.Method == http.MethodPost:
 		handleGenerateReport(w, req)
+	case isReportStream(path) && req.Method == http.MethodGet:
+		handleStreamReport(w, req)
+	case isReportExport(path) && req.Method == http.MethodGet:
+		handleExportReport(w, req)
+	case isSimHistory(path) && req.Method == http.MethodGet:
+		handleSimHistory(w, req)
 	case isReport(path) && req.Method == http.MethodGet:
 		handleGetReport(w, req)
 	case isChat(path) && req.Method == http.MethodPost:
@@ -75,8 +81,16 @@ func isSimStop(p string) bool       { return endsWith(p, "/simulation/stop") }
 func isSimStatus(p string) bool     { return endsWith(p, "/simulation/status") }
 func isSimActions(p string) bool    { return endsWith(p, "/simulation/actions") }
 func isReportGenerate(p string) bool { return endsWith(p, "/report/generate") }
-func isReport(p string) bool        { return endsWith(p, "/report") && !endsWith(p, "/report/generate") }
-func isChat(p string) bool          { return endsWith(p, "/chat") }
+func isReportStream(p string) bool  { return endsWith(p, "/report/stream") }
+func isReportExport(p string) bool  { return endsWith(p, "/report/export") }
+func isSimHistory(p string) bool    { return endsWith(p, "/simulation/history") }
+func isReport(p string) bool {
+	return endsWith(p, "/report") &&
+		!endsWith(p, "/report/generate") &&
+		!endsWith(p, "/report/stream") &&
+		!endsWith(p, "/report/export")
+}
+func isChat(p string) bool { return endsWith(p, "/chat") }
 
 func endsWith(path, suffix string) bool {
 	return len(path) >= len(suffix) && path[len(path)-len(suffix):] == suffix
@@ -154,7 +168,7 @@ func handleListProjects(w http.ResponseWriter, req *http.Request) {
 
 func handleDeleteProject(w http.ResponseWriter, req *http.Request) {
 	id := extractProjectID(req.URL.Path)
-	for _, col := range []string{"graph_nodes", "graph_edges", "agents", "simulation_actions", "reports"} {
+	for _, col := range []string{"graph_nodes", "graph_edges", "agents", "simulation_actions", "reports", "agent_memories", "sim_history"} {
 		_ = storage.DB.DeleteWhere(col, func(r storage.Record) bool {
 			return storage.GetStr(r, "project_id") == id
 		})

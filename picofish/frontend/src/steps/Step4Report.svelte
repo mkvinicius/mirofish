@@ -5,13 +5,36 @@
 
   let status = null
   let error = ''
-  let interval = null
   let scenarioInput = $simRequirement || ''
+  let eventSource = null
 
   onMount(async () => {
     status = await api.getReport($currentProject.id).catch(() => null)
+    if (status?.status === 'generating' || status?.status === 'planning') {
+      startSSE()
+    }
   })
-  onDestroy(() => { if (interval) clearInterval(interval) })
+
+  onDestroy(() => closeSSE())
+
+  function closeSSE() {
+    if (eventSource) { eventSource.close(); eventSource = null }
+  }
+
+  function startSSE() {
+    closeSSE()
+    eventSource = new EventSource(api.reportStreamUrl($currentProject.id))
+    eventSource.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data)
+        status = data
+        if (data.status === 'completed' || data.status === 'error') {
+          closeSSE()
+        }
+      } catch {}
+    }
+    eventSource.onerror = () => closeSSE()
+  }
 
   async function generate() {
     error = ''
@@ -19,21 +42,14 @@
     simRequirement.set(req)
     try {
       status = await api.generateReport($currentProject.id, req)
-      if (interval) clearInterval(interval)
-      interval = setInterval(poll, 3000)
+      startSSE()
     } catch(e) { error = e.message }
   }
 
-  async function poll() {
-    try {
-      status = await api.getReport($currentProject.id)
-      if (status?.status === 'completed' || status?.status === 'error') {
-        clearInterval(interval); interval = null
-      }
-    } catch {}
+  function exportReport() {
+    window.open(api.exportReportUrl($currentProject.id), '_blank')
   }
 
-  // Minimal markdown-to-HTML renderer
   function renderMarkdown(md) {
     if (!md) return ''
     return md
@@ -45,11 +61,9 @@
       .replace(/^---$/gm, '<hr>')
       .replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>')
       .replace(/^- (.+)$/gm, '<li>$1</li>')
-      .replace(/<\/li>\n<li>/g, '</li><li>')
       .replace(/(<li>.*<\/li>)/gs, '<ul>$1</ul>')
       .replace(/\n\n/g, '</p><p>')
-      .replace(/^/, '<p>')
-      .replace(/$/, '</p>')
+      .replace(/^/, '<p>').replace(/$/, '</p>')
   }
 </script>
 
@@ -71,6 +85,8 @@
   }
   input:focus { border-color: #38bdf8; }
 
+  .btn-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
   button {
     background: #38bdf8;
     color: #0f172a;
@@ -83,25 +99,32 @@
   }
   button:hover { background: #7dd3fc; }
   button:disabled { opacity: 0.5; cursor: not-allowed; }
-  button.regen {
+  button.secondary {
     background: transparent;
     border: 1px solid #334155;
     color: #94a3b8;
     font-size: 0.8rem;
-    padding: 4px 12px;
-    margin-left: 12px;
+    padding: 7px 14px;
   }
-  button.regen:hover { border-color: #38bdf8; color: #38bdf8; }
+  button.secondary:hover { border-color: #38bdf8; color: #38bdf8; }
+  button.export {
+    background: #14532d;
+    color: #22c55e;
+    font-size: 0.8rem;
+    padding: 7px 14px;
+  }
+  button.export:hover { background: #166534; }
 
   .error { color: #ef4444; font-size: 0.85rem; margin-bottom: 12px; }
 
   .status-pill {
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     padding: 3px 10px;
     border-radius: 20px;
     font-size: 0.8rem;
     font-weight: 600;
-    margin-bottom: 16px;
   }
   .planning { background: #2d1b69; color: #a78bfa; }
   .generating { background: #0c4a6e; color: #38bdf8; }
@@ -113,13 +136,22 @@
     border: 1px solid #334155;
     border-radius: 10px;
     padding: 14px;
-    margin-bottom: 16px;
+    margin: 12px 0;
   }
-  .outline h3 { font-size: 0.9rem; color: #94a3b8; margin-bottom: 8px; }
-  .outline-title { font-weight: 600; color: #f1f5f9; margin-bottom: 4px; }
+  .outline-title { font-weight: 600; color: #f1f5f9; margin-bottom: 6px; font-size: 0.9rem; }
   .section-list { list-style: none; padding: 0; margin: 0; }
   .section-list li { font-size: 0.82rem; color: #64748b; padding: 2px 0; }
   .section-list li::before { content: "• "; color: #38bdf8; }
+
+  .spinner {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border: 2px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
 
   .report-body {
     background: #1e293b;
@@ -131,7 +163,6 @@
     font-size: 0.875rem;
     color: #cbd5e1;
   }
-
   :global(.report-body h1) { font-size: 1.3rem; color: #f1f5f9; margin: 0 0 8px; }
   :global(.report-body h2) { font-size: 1.1rem; color: #38bdf8; margin: 24px 0 8px; }
   :global(.report-body h3) { font-size: 0.95rem; color: #7dd3fc; margin: 16px 0 6px; }
@@ -147,24 +178,27 @@
 </style>
 
 <h2>Step 4 — Generate Report</h2>
-<p class="desc">The ReACT agent analyzes simulation results using InsightForge, PanoramaSearch, QuickSearch, and InterviewAgents tools to produce a Future Prediction Report.</p>
+<p class="desc">The ReACT agent analyzes the simulation using InsightForge, PanoramaSearch, QuickSearch, and InterviewAgents — streaming progress in real time.</p>
 
 {#if error}<p class="error">{error}</p>{/if}
 
-{#if !status || status.status === 'not_found' || (!status.status)}
+{#if !status || status.status === 'not_found' || !status.status}
   <label>Scenario (sim requirement)</label>
-  <input bind:value={scenarioInput} placeholder="Describe the scenario — e.g. Government announces AI regulation..." />
+  <input bind:value={scenarioInput} placeholder="e.g. Government announces AI regulation policy..." />
   <button on:click={generate}>Generate Report</button>
 
 {:else if status.status === 'planning'}
-  <span class="status-pill planning">Planning outline...</span>
-  <p style="color: #64748b; font-size: 0.85rem">Analyzing the simulation scenario and structuring the report.</p>
+  <div class="btn-row">
+    <span class="status-pill planning"><span class="spinner"></span> Planning outline...</span>
+  </div>
+  <p style="color: #64748b; font-size: 0.85rem; margin-top: 12px">Analyzing scenario and structuring the report sections.</p>
 
 {:else if status.status === 'generating'}
-  <span class="status-pill generating">Generating report...</span>
+  <div class="btn-row">
+    <span class="status-pill generating"><span class="spinner"></span> Generating...</span>
+  </div>
   {#if status.outline}
     <div class="outline">
-      <h3>Report outline</h3>
       <div class="outline-title">{status.outline.title}</div>
       <ul class="section-list">
         {#each status.outline.sections || [] as sec}
@@ -173,11 +207,14 @@
       </ul>
     </div>
   {/if}
-  <p style="color: #64748b; font-size: 0.85rem">The ReACT agent is using tools to gather evidence. This may take a few minutes.</p>
+  <p style="color: #64748b; font-size: 0.85rem">ReACT agent gathering evidence — updates stream in real time.</p>
 
 {:else if status.status === 'completed'}
-  <span class="status-pill completed">Report ready</span>
-  <button class="regen" on:click={generate}>Regenerate</button>
+  <div class="btn-row">
+    <span class="status-pill completed">✓ Report ready</span>
+    <button class="secondary" on:click={generate}>Regenerate</button>
+    <button class="export" on:click={exportReport}>↓ Export .md</button>
+  </div>
   <div class="report-body">{@html renderMarkdown(status.content)}</div>
   <div class="next-btn">
     <button on:click={() => $currentStep = 5}>Next: Deep Interaction →</button>

@@ -275,16 +275,19 @@ func (m *Manager) runLoop(ctx context.Context, projectID, simID string,
 	profiles []*OasisAgentProfile, totalHours int, platform, topic string, state *SimState) {
 
 	world := newWorld()
-	memories := make(map[string]*AgentMemory)
-	for _, p := range profiles {
-		memories[p.ID] = &AgentMemory{AgentID: p.ID, ProjectID: projectID}
-	}
 
-	startHour := 8 // Start at 8:00 (morning)
+	// Load persistent memories from previous simulations
+	memories := loadOrInitMemories(projectID, profiles)
+
+	// Build initial social graph: agents with same stance follow each other
+	initSocialGraph(world, profiles)
+
+	startHour := 8
 
 	for hour := 0; hour < totalHours; hour++ {
 		select {
 		case <-ctx.Done():
+			persistMemories(projectID, memories)
 			m.setStatus(projectID, "stopped")
 			return
 		default:
@@ -293,11 +296,9 @@ func (m *Manager) runLoop(ctx context.Context, projectID, simID string,
 		simHour := (startHour + hour) % 24
 		m.setHour(projectID, hour+1, simHour)
 
-		// Determine active agents based on hour multiplier + personal activity level
 		mult := hourMultiplier[simHour]
 		var active []*OasisAgentProfile
 		for _, p := range profiles {
-			// Check if this is an active hour for the agent
 			isActiveHour := false
 			for _, h := range p.ActiveHours {
 				if h == simHour {
@@ -305,28 +306,24 @@ func (m *Manager) runLoop(ctx context.Context, projectID, simID string,
 					break
 				}
 			}
-			// Combine: agent activity level * hour multiplier * random
 			threshold := p.ActivityLevel * mult
 			if isActiveHour && rand.Float64() < threshold {
 				active = append(active, p)
 			}
 		}
-		// Ensure minimum activity
 		if len(active) == 0 && len(profiles) > 0 {
 			active = []*OasisAgentProfile{profiles[rand.Intn(len(profiles))]}
 		}
 
-		// Determine platform for this round
 		activePlatform := platform
 		if platform == "both" {
-			if simHour >= 19 { // evening = more Twitter
+			if simHour >= 19 {
 				activePlatform = "twitter"
 			} else {
 				activePlatform = "reddit"
 			}
 		}
 
-		// Run active agents concurrently (bounded semaphore)
 		sem := make(chan struct{}, 3)
 		var wg sync.WaitGroup
 		for _, agent := range active {
@@ -346,16 +343,152 @@ func (m *Manager) runLoop(ctx context.Context, projectID, simID string,
 		}
 		wg.Wait()
 
-		// Throttle between rounds
+		// Viral cascade: check for trending posts and shift agent sentiments
+		applyViralCascade(world, profiles, simHour)
+
 		select {
 		case <-ctx.Done():
+			persistMemories(projectID, memories)
 			m.setStatus(projectID, "stopped")
 			return
 		case <-time.After(300 * time.Millisecond):
 		}
 	}
 
+	// Persist memories for next simulation
+	persistMemories(projectID, memories)
+
+	// Save simulation run to history
+	saveSimHistory(projectID, simID, state)
+
 	m.setStatus(projectID, "completed")
+}
+
+// initSocialGraph seeds the follow graph: same-stance agents follow each other.
+func initSocialGraph(world *World, profiles []*OasisAgentProfile) {
+	byStance := make(map[string][]string)
+	for _, p := range profiles {
+		byStance[p.Stance] = append(byStance[p.Stance], p.ID)
+	}
+	world.mu.Lock()
+	defer world.mu.Unlock()
+	for _, ids := range byStance {
+		for i, id := range ids {
+			for j, other := range ids {
+				if i != j {
+					world.follows[id] = append(world.follows[id], other)
+				}
+			}
+		}
+	}
+	// High-influence agents get cross-stance followers too
+	for _, p := range profiles {
+		if p.InfluenceWeight >= 1.8 {
+			for _, other := range profiles {
+				if other.ID != p.ID {
+					world.follows[other.ID] = append(world.follows[other.ID], p.ID)
+				}
+			}
+		}
+	}
+}
+
+// applyViralCascade detects posts with high engagement and shifts agent sentiment.
+// Replicates OASIS cascade dynamics: viral content biases agents toward its tone.
+func applyViralCascade(world *World, profiles []*OasisAgentProfile, simHour int) {
+	world.mu.RLock()
+	var viral []*Post
+	for _, p := range world.posts {
+		if p.LikeCount+p.RepostCount*2 >= 5 {
+			viral = append(viral, p)
+		}
+	}
+	world.mu.RUnlock()
+
+	if len(viral) == 0 {
+		return
+	}
+
+	// Determine dominant sentiment of viral posts (positive content = positive bias shift)
+	positiveViral, negativeViral := 0, 0
+	for _, p := range viral {
+		text := strings.ToLower(p.Content)
+		for _, w := range []string{"great", "support", "agree", "good", "excellent", "amazing"} {
+			if strings.Contains(text, w) {
+				positiveViral++
+			}
+		}
+		for _, w := range []string{"bad", "wrong", "oppose", "crisis", "fail", "terrible"} {
+			if strings.Contains(text, w) {
+				negativeViral++
+			}
+		}
+	}
+
+	shift := 0.0
+	if positiveViral > negativeViral {
+		shift = 0.05
+	} else if negativeViral > positiveViral {
+		shift = -0.05
+	}
+	if shift == 0 {
+		return
+	}
+
+	// Nudge neutral/observer agents toward the viral sentiment
+	for _, p := range profiles {
+		if p.Stance == "neutral" || p.Stance == "observer" {
+			p.SentimentBias = clampF(p.SentimentBias+shift, -1.0, 1.0)
+		}
+	}
+}
+
+// ── Persistent memory ──────────────────────────────────────────────────────
+
+func loadOrInitMemories(projectID string, profiles []*OasisAgentProfile) map[string]*AgentMemory {
+	memories := make(map[string]*AgentMemory)
+	for _, p := range profiles {
+		mem := loadMemory(projectID, p.ID)
+		if mem == nil {
+			mem = &AgentMemory{AgentID: p.ID, ProjectID: projectID}
+		}
+		memories[p.ID] = mem
+	}
+	return memories
+}
+
+func loadMemory(projectID, agentID string) *AgentMemory {
+	records := storage.DB.QueryFunc("agent_memories", func(r storage.Record) bool {
+		return storage.GetStr(r, "project_id") == projectID &&
+			storage.GetStr(r, "agent_id") == agentID
+	})
+	if len(records) == 0 {
+		return nil
+	}
+	var mem AgentMemory
+	if err := json.Unmarshal([]byte(storage.GetStr(records[0], "data")), &mem); err != nil {
+		return nil
+	}
+	return &mem
+}
+
+func persistMemories(projectID string, memories map[string]*AgentMemory) {
+	for _, mem := range memories {
+		if len(mem.Memories) == 0 {
+			continue
+		}
+		b, err := json.Marshal(mem)
+		if err != nil {
+			continue
+		}
+		id := projectID + "_" + mem.AgentID
+		_ = storage.DB.Insert("agent_memories", id, storage.Record{
+			"id":         id,
+			"project_id": projectID,
+			"agent_id":   mem.AgentID,
+			"data":       string(b),
+		})
+	}
 }
 
 // agentAct decides an action for one agent using LLM.
@@ -689,4 +822,56 @@ func trunc(s string, max int) string {
 		return s
 	}
 	return s[:max] + "..."
+}
+
+// ── Simulation history ─────────────────────────────────────────────────────
+
+type SimHistoryEntry struct {
+	SimID       string `json:"sim_id"`
+	ProjectID   string `json:"project_id"`
+	Topic       string `json:"topic"`
+	Platform    string `json:"platform"`
+	TotalHours  int    `json:"total_hours"`
+	AgentCount  int    `json:"agent_count"`
+	ActionCount int    `json:"action_count"`
+	Status      string `json:"status"`
+	StartedAt   string `json:"started_at"`
+	CompletedAt string `json:"completed_at"`
+}
+
+func saveSimHistory(projectID, simID string, state *SimState) {
+	entry := SimHistoryEntry{
+		SimID:       simID,
+		ProjectID:   projectID,
+		Topic:       state.Topic,
+		Platform:    state.Platform,
+		TotalHours:  state.TotalHours,
+		AgentCount:  state.AgentCount,
+		ActionCount: state.ActionCount,
+		Status:      state.Status,
+		StartedAt:   state.StartedAt.Format(time.RFC3339),
+		CompletedAt: time.Now().Format(time.RFC3339),
+	}
+	b, _ := json.Marshal(entry)
+	_ = storage.DB.Insert("sim_history", simID, storage.Record{
+		"id":         simID,
+		"project_id": projectID,
+		"data":       string(b),
+		"started_at": entry.StartedAt,
+	})
+}
+
+// GetSimHistory returns all past simulation runs for a project.
+func GetSimHistory(projectID string) []SimHistoryEntry {
+	records := storage.DB.QueryFunc("sim_history", func(r storage.Record) bool {
+		return storage.GetStr(r, "project_id") == projectID
+	})
+	var entries []SimHistoryEntry
+	for _, r := range records {
+		var e SimHistoryEntry
+		if err := json.Unmarshal([]byte(storage.GetStr(r, "data")), &e); err == nil {
+			entries = append(entries, e)
+		}
+	}
+	return entries
 }

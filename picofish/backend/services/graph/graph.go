@@ -228,18 +228,44 @@ Document:
 // ── Embedding generation ───────────────────────────────────────────────────
 
 func embedNodes(ctx context.Context, nodes []Node) {
+	texts := make([]string, len(nodes))
 	for i := range nodes {
-		text := fmt.Sprintf("%s: %s. %s", nodes[i].Type, nodes[i].Name, nodes[i].Summary)
-		if emb, err := llm.Embed(ctx, text); err == nil {
-			nodes[i].Embedding = emb
+		texts[i] = fmt.Sprintf("%s: %s. %s", nodes[i].Type, nodes[i].Name, nodes[i].Summary)
+	}
+	embs, err := llm.EmbedBatch(ctx, texts)
+	if err != nil {
+		// fallback: individual
+		for i := range nodes {
+			if emb, e2 := llm.Embed(ctx, texts[i]); e2 == nil {
+				nodes[i].Embedding = emb
+			}
+		}
+		return
+	}
+	for i := range nodes {
+		if i < len(embs) {
+			nodes[i].Embedding = embs[i]
 		}
 	}
 }
 
 func embedEdges(ctx context.Context, edges []Edge) {
+	texts := make([]string, len(edges))
 	for i := range edges {
-		if emb, err := llm.Embed(ctx, edges[i].Fact); err == nil {
-			edges[i].Embedding = emb
+		texts[i] = edges[i].Fact
+	}
+	embs, err := llm.EmbedBatch(ctx, texts)
+	if err != nil {
+		for i := range edges {
+			if emb, e2 := llm.Embed(ctx, edges[i].Fact); e2 == nil {
+				edges[i].Embedding = emb
+			}
+		}
+		return
+	}
+	for i := range edges {
+		if i < len(embs) {
+			edges[i].Embedding = embs[i]
 		}
 	}
 }

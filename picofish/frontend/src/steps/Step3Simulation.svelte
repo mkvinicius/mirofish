@@ -8,11 +8,14 @@
   let platform = 'both'
   let status = null
   let actions = []
+  let history = []
   let error = ''
   let interval = null
+  let showHistory = false
 
   onMount(async () => {
     await refresh()
+    history = await api.getSimHistory($currentProject.id).catch(() => [])
   })
   onDestroy(() => { if (interval) clearInterval(interval) })
 
@@ -181,6 +184,29 @@
   .action-content { font-size: 0.82rem; color: #94a3b8; line-height: 1.4; }
 
   .next-btn { margin-top: 24px; display: flex; justify-content: flex-end; }
+
+  button.history-toggle {
+    background: transparent;
+    border: 1px solid #334155;
+    color: #64748b;
+    font-size: 0.8rem;
+    padding: 6px 12px;
+    margin-bottom: 10px;
+  }
+  button.history-toggle:hover { border-color: #38bdf8; color: #38bdf8; background: transparent; }
+
+  .history-list { display: flex; flex-direction: column; gap: 6px; }
+  .history-item {
+    background: #1e293b;
+    border: 1px solid #1e3a4c;
+    border-radius: 8px;
+    padding: 10px 14px;
+  }
+  .history-header { display: flex; align-items: center; gap: 8px; }
+  .history-platform { font-size: 0.85rem; }
+  .history-topic { font-size: 0.82rem; color: #cbd5e1; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .history-meta { font-size: 0.75rem; color: #38bdf8; white-space: nowrap; }
+  .history-time { font-size: 0.72rem; color: #475569; margin-top: 3px; }
 </style>
 
 <h2>Step 3 — Run Simulation</h2>
@@ -258,5 +284,27 @@
 {#if status?.status === 'completed'}
   <div class="next-btn">
     <button on:click={() => $currentStep = 4}>Next: Generate Report →</button>
+  </div>
+{/if}
+
+{#if history.length > 0}
+  <div style="margin-top: 32px">
+    <button class="history-toggle" on:click={() => showHistory = !showHistory}>
+      {showHistory ? '▲' : '▼'} Past Runs ({history.length})
+    </button>
+    {#if showHistory}
+      <div class="history-list">
+        {#each history as h}
+          <div class="history-item">
+            <div class="history-header">
+              <span class="history-platform">{platformIcon(h.platform)}</span>
+              <span class="history-topic">{h.topic}</span>
+              <span class="history-meta">{h.total_hours}h · {h.action_count} actions</span>
+            </div>
+            <div class="history-time">{h.started_at ? new Date(h.started_at).toLocaleString() : ''}</div>
+          </div>
+        {/each}
+      </div>
+    {/if}
   </div>
 {/if}

@@ -43,15 +43,26 @@ type Section struct {
 // ── Status store ───────────────────────────────────────────────────────────
 
 type statusStore struct {
-	mu sync.RWMutex
-	m  map[string]*Status
+	mu       sync.RWMutex
+	m        map[string]*Status
+	watchers map[string][]chan struct{} // SSE listeners per project
 }
 
-var statuses = &statusStore{m: make(map[string]*Status)}
+var statuses = &statusStore{
+	m:        make(map[string]*Status),
+	watchers: make(map[string][]chan struct{}),
+}
 
 func (s *statusStore) set(key string, v *Status) {
 	s.mu.Lock()
 	s.m[key] = v
+	// Notify SSE watchers
+	for _, ch := range s.watchers[key] {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
 	s.mu.Unlock()
 }
 
@@ -59,6 +70,31 @@ func (s *statusStore) get(key string) *Status {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.m[key]
+}
+
+func (s *statusStore) watch(key string) (chan struct{}, func()) {
+	ch := make(chan struct{}, 4)
+	s.mu.Lock()
+	s.watchers[key] = append(s.watchers[key], ch)
+	s.mu.Unlock()
+	unwatch := func() {
+		s.mu.Lock()
+		ws := s.watchers[key]
+		for i, w := range ws {
+			if w == ch {
+				s.watchers[key] = append(ws[:i], ws[i+1:]...)
+				break
+			}
+		}
+		s.mu.Unlock()
+	}
+	return ch, unwatch
+}
+
+// Subscribe returns a channel that receives updates whenever the report status changes.
+// The caller must call the returned cancel func when done.
+func Subscribe(projectID string) (chan struct{}, func()) {
+	return statuses.watch(projectID)
 }
 
 // ── Entry point ────────────────────────────────────────────────────────────
@@ -84,11 +120,13 @@ func Generate(ctx context.Context, projectID, simRequirement string) (*Status, e
 		if err != nil {
 			status.Status = "error"
 			status.Error = err.Error()
+			statuses.set(projectID, status) // notify watchers
 			_ = storage.DB.Update("reports", reportID, storage.Record{"status": "error", "content": err.Error()})
 			return
 		}
 		status.Status = "completed"
 		status.Content = content
+		statuses.set(projectID, status) // notify watchers
 		_ = storage.DB.Update("reports", reportID, storage.Record{"status": "completed", "content": content})
 	}()
 
@@ -200,6 +238,7 @@ Sample simulation facts:
 	}
 	status.Outline = &outline
 	status.Status = "generating"
+	statuses.set(projectID, status) // notify SSE watchers: outline ready
 	_ = storage.DB.Update("reports", reportID, storage.Record{"status": "generating"})
 
 	// Generate sections

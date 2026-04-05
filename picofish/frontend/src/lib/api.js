@@ -36,11 +36,14 @@ export const api = {
   stopSimulation: (id) => request('POST', `/projects/${id}/simulation/stop`),
   getSimulationStatus: (id) => request('GET', `/projects/${id}/simulation/status`),
   getSimulationActions: (id) => request('GET', `/projects/${id}/simulation/actions`),
+  getSimHistory: (id) => request('GET', `/projects/${id}/simulation/history`),
 
   // Report (Step 4)
   generateReport: (id, sim_requirement) =>
     request('POST', `/projects/${id}/report/generate`, { sim_requirement }),
   getReport: (id) => request('GET', `/projects/${id}/report`),
+  exportReportUrl: (id) => `${BASE}/projects/${id}/report/export`,
+  reportStreamUrl: (id) => `${BASE}/projects/${id}/report/stream`,
 
   // Chat (Step 5)
   chat: (id, sim_requirement, message, history) =>

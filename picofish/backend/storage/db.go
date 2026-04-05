@@ -34,7 +34,7 @@ func Init(path string) error {
 		collections: make(map[string]map[string]Record),
 	}
 	// Load existing data
-	collections := []string{"projects", "graph_nodes", "graph_edges", "agents", "simulation_actions", "reports"}
+	collections := []string{"projects", "graph_nodes", "graph_edges", "agents", "simulation_actions", "reports", "agent_memories", "sim_history"}
 	for _, c := range collections {
 		if err := DB.load(c); err != nil {
 			return fmt.Errorf("load %s: %w", c, err)
