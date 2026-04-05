@@ -17,18 +17,11 @@ func NewRouter() *Router {
 }
 
 // Handle registers a handler with method+path routing.
-// Path can end with / to match prefixes (e.g. "/api/v1/projects/").
+// Uses Go 1.22+ method-qualified patterns ("GET /path") to avoid duplicate registrations.
+// OPTIONS is handled globally in ServeHTTP before the mux.
 func (r *Router) Handle(method, path string, h http.HandlerFunc) {
-	r.mux.HandleFunc(path, func(w http.ResponseWriter, req *http.Request) {
+	r.mux.HandleFunc(method+" "+path, func(w http.ResponseWriter, req *http.Request) {
 		setCORS(w)
-		if req.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		if req.Method != method {
-			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-			return
-		}
 		h(w, req)
 	})
 }
