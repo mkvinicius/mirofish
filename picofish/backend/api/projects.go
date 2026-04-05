@@ -11,8 +11,9 @@ import (
 func RegisterProjects(r *Router) {
 	r.Handle("POST", "/api/v1/projects", handleCreateProject)
 	r.Handle("GET", "/api/v1/projects", handleListProjects)
-	// DELETE uses prefix handler
-	r.mux.HandleFunc("/api/v1/projects/", projectsSubrouter)
+	// {rest...} matches /projects/{id} and deeper paths without triggering
+	// Go's trailing-slash redirect on the exact /api/v1/projects path.
+	r.mux.HandleFunc("/api/v1/projects/{rest...}", projectsSubrouter)
 }
 
 func projectsSubrouter(w http.ResponseWriter, req *http.Request) {
