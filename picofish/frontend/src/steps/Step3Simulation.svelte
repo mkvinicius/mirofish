@@ -15,6 +15,9 @@
 
   onMount(async () => {
     await refresh()
+    if (status?.status === 'completed') {
+      actions = await api.getSimulationActions($currentProject.id).catch(() => [])
+    }
     history = await api.getSimHistory($currentProject.id).catch(() => [])
   })
   onDestroy(() => { if (interval) clearInterval(interval) })
