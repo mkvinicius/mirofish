@@ -2,7 +2,7 @@
   import { api } from '../lib/api.js'
   import { currentProject, simRequirement } from '../stores/project.js'
 
-  let messages = [] // { role: 'user'|'assistant', content: string }
+  let messages = []
   let input = ''
   let loading = false
   let error = ''
@@ -18,7 +18,7 @@
     loading = true
     try {
       const history = messages.slice(0, -1).map(m => ({ role: m.role, content: m.content }))
-      const req = $simRequirement || 'Social simulation analysis'
+      const req = $simRequirement || 'Análise de simulação social'
       const res = await api.chat($currentProject.id, req, msg, history)
       messages = [...messages, { role: 'assistant', content: res.response }]
     } catch(e) {
@@ -31,12 +31,12 @@
   }
 
   const suggestions = [
-    'Summarize the main predictions of the simulation',
-    'Which agents were most influential and why?',
-    'What were the dominant sentiments across platforms?',
-    'What risks and opportunities does the simulation reveal?',
-    'How did different agent groups react to the scenario?',
-    'What cascade effects emerged from the simulation?'
+    'Resuma as principais previsões da simulação',
+    'Quais agentes foram mais influentes e por quê?',
+    'Quais foram os sentimentos dominantes nas plataformas?',
+    'Que riscos e oportunidades a simulação revela?',
+    'Como diferentes grupos de agentes reagiram ao cenário?',
+    'Quais efeitos em cascata emergiram da simulação?'
   ]
 </script>
 
@@ -138,11 +138,11 @@
   .typing { color: #64748b; font-size: 0.8rem; padding: 8px 0; }
 </style>
 
-<h2>Step 5 — Deep Interaction</h2>
-<p class="desc">Ask anything about the simulation. The AI analyst has god's-eye view of the knowledge graph, all agent behaviors, and temporal dynamics.</p>
+<h2>Passo 5 — Interação Profunda</h2>
+<p class="desc">Pergunte qualquer coisa sobre a simulação. O analista de IA tem visão completa do grafo de conhecimento, comportamentos dos agentes e dinâmicas temporais.</p>
 
 {#if $simRequirement}
-  <div class="scenario-badge">Scenario: <strong>{$simRequirement}</strong></div>
+  <div class="scenario-badge">Cenário: <strong>{$simRequirement}</strong></div>
 {/if}
 
 <div class="suggestions">
@@ -154,8 +154,8 @@
 <div class="chat-window" bind:this={chatEl}>
   {#if messages.length === 0}
     <div class="empty">
-      Ask anything about the simulation results...<br>
-      <span style="font-size: 0.75rem; margin-top: 6px; display: block">Use the suggestions above or type your own question</span>
+      Pergunte qualquer coisa sobre os resultados da simulação...<br>
+      <span style="font-size: 0.75rem; margin-top: 6px; display: block">Use as sugestões acima ou digite sua própria pergunta</span>
     </div>
   {/if}
   {#each messages as m}
@@ -165,17 +165,17 @@
     </div>
   {/each}
   {#if loading}
-    <p class="typing">Analyzing...</p>
+    <p class="typing">Analisando...</p>
   {/if}
 </div>
 
 <div class="input-row">
   <input
     bind:value={input}
-    placeholder="Ask about the simulation..."
+    placeholder="Pergunte sobre a simulação..."
     on:keydown={e => e.key === 'Enter' && send()}
     disabled={loading}
   />
-  <button on:click={send} disabled={loading || !input.trim()}>Send</button>
+  <button on:click={send} disabled={loading || !input.trim()}>Enviar</button>
 </div>
 {#if error}<p class="error">{error}</p>{/if}

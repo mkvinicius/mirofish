@@ -209,60 +209,62 @@
   .history-time { font-size: 0.72rem; color: #475569; margin-top: 3px; }
 </style>
 
-<h2>Step 3 — Run Simulation</h2>
-<p class="desc">Agents interact on simulated Twitter/Reddit over simulated hours — producing organic social dynamics with feed algorithms, echo chambers, and behavioral memory.</p>
+<h2>Passo 3 — Rodar Simulação</h2>
+<p class="desc">Agentes interagem no Twitter/Reddit simulado ao longo de horas — produzindo dinâmicas sociais orgânicas com algoritmos de feed, câmaras de eco e memória comportamental.</p>
 
 {#if error}<p class="error">{error}</p>{/if}
 
 <div class="config-row">
   <div class="field" style="flex: 3">
-    <label>Scenario / Simulation Requirement *</label>
-    <input bind:value={topic} placeholder="e.g. Government announces strict new AI regulation policy..." />
+    <label>Cenário / Requisito da Simulação *</label>
+    <input bind:value={topic} placeholder="ex: Governo anuncia regulação severa de IA no Brasil..." />
   </div>
   <div class="field narrow">
-    <label>Hours</label>
+    <label>Horas</label>
     <input type="number" bind:value={totalHours} min="1" max="168" style="min-width: 72px" />
   </div>
   <div class="field narrow">
-    <label>Platform</label>
+    <label>Plataforma</label>
     <select bind:value={platform}>
-      <option value="both">Both</option>
+      <option value="both">Ambas</option>
       <option value="twitter">Twitter</option>
       <option value="reddit">Reddit</option>
     </select>
   </div>
   {#if status?.status !== 'running'}
-    <button on:click={start} disabled={!topic.trim()}>▶ Start</button>
+    <button on:click={start} disabled={!topic.trim()}>▶ Iniciar</button>
   {:else}
-    <button class="stop" on:click={stop}>⏹ Stop</button>
+    <button class="stop" on:click={stop}>⏹ Parar</button>
   {/if}
 </div>
 
 {#if status && status.status !== 'not_started'}
   <div class="status-bar">
     <div class="status-header">
-      <span class="status-label {status.status}">{status.status.toUpperCase()}</span>
+      <span class="status-label {status.status}">
+        {status.status === 'running' ? 'RODANDO' : status.status === 'completed' ? 'CONCLUÍDO' : 'PARADO'}
+      </span>
       {#if status.status === 'running'}
-        <span style="font-size: 0.8rem; color: #64748b">auto-refreshing...</span>
+        <span style="font-size: 0.8rem; color: #64748b">atualizando...</span>
       {/if}
     </div>
     {#if status.total_hours > 0}
       <div class="progress-track">
         <div class="progress-fill" style="width:{progressPct(status)}%"></div>
       </div>
-      <p class="progress-text">Hour {status.current_hour} / {status.total_hours}</p>
+      <p class="progress-text">Hora {status.current_hour} / {status.total_hours}</p>
     {/if}
     <div class="stats">
-      <div class="stat">Agents: <span>{status.agent_count || 0}</span></div>
-      <div class="stat">Actions: <span>{status.action_count || 0}</span></div>
-      {#if status.platform}<div class="stat">Platform: <span>{status.platform}</span></div>{/if}
+      <div class="stat">Agentes: <span>{status.agent_count || 0}</span></div>
+      <div class="stat">Ações: <span>{status.action_count || 0}</span></div>
+      {#if status.platform}<div class="stat">Plataforma: <span>{status.platform}</span></div>{/if}
     </div>
   </div>
 {/if}
 
 {#if actions.length > 0}
   <div class="actions-feed">
-    <h3>Live Feed ({actions.length} actions)</h3>
+    <h3>Feed ao Vivo ({actions.length} ações)</h3>
     <div class="action-list">
       {#each actions as a}
         <div class="action-item">
@@ -283,14 +285,14 @@
 
 {#if status?.status === 'completed'}
   <div class="next-btn">
-    <button on:click={() => $currentStep = 4}>Next: Generate Report →</button>
+    <button on:click={() => $currentStep = 4}>Próximo: Gerar Relatório →</button>
   </div>
 {/if}
 
 {#if history.length > 0}
   <div style="margin-top: 32px">
     <button class="history-toggle" on:click={() => showHistory = !showHistory}>
-      {showHistory ? '▲' : '▼'} Past Runs ({history.length})
+      {showHistory ? '▲' : '▼'} Simulações Anteriores ({history.length})
     </button>
     {#if showHistory}
       <div class="history-list">
@@ -299,9 +301,9 @@
             <div class="history-header">
               <span class="history-platform">{platformIcon(h.platform)}</span>
               <span class="history-topic">{h.topic}</span>
-              <span class="history-meta">{h.total_hours}h · {h.action_count} actions</span>
+              <span class="history-meta">{h.total_hours}h · {h.action_count} ações</span>
             </div>
-            <div class="history-time">{h.started_at ? new Date(h.started_at).toLocaleString() : ''}</div>
+            <div class="history-time">{h.started_at ? new Date(h.started_at).toLocaleString('pt-BR') : ''}</div>
           </div>
         {/each}
       </div>

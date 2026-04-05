@@ -27,7 +27,7 @@
 
   async function deleteProject(id, e) {
     e.stopPropagation()
-    if (!confirm('Delete this project?')) return
+    if (!confirm('Excluir este projeto?')) return
     try {
       await api.deleteProject(id)
       projects = projects.filter(p => p.id !== id)
@@ -111,29 +111,29 @@
 </style>
 
 <h1>🐟 PicoFish</h1>
-<p class="subtitle">Lightweight multi-agent social simulation — runs on Raspberry Pi</p>
+<p class="subtitle">Simulação social multi-agente leve — roda até no Raspberry Pi</p>
 
 {#if error}<p class="error">⚠ {error}</p>{/if}
 
 <div class="create-form">
-  <h2>New Project</h2>
+  <h2>Novo Projeto</h2>
   <div class="row">
     <div class="field">
-      <label>Project Name *</label>
-      <input bind:value={name} placeholder="e.g. Climate Policy Impact" on:keydown={e => e.key === 'Enter' && createProject()} />
+      <label>Nome do Projeto *</label>
+      <input bind:value={name} placeholder="ex: Impacto da Regulação de IA" on:keydown={e => e.key === 'Enter' && createProject()} />
     </div>
     <div class="field">
-      <label>Description</label>
-      <input bind:value={description} placeholder="Optional description" />
+      <label>Descrição</label>
+      <input bind:value={description} placeholder="Descrição opcional" />
     </div>
     <button on:click={createProject} disabled={loading || !name.trim()}>
-      {loading ? '...' : '+ Create'}
+      {loading ? '...' : '+ Criar'}
     </button>
   </div>
 </div>
 
 {#if projects.length === 0}
-  <p class="empty">No projects yet. Create one above to get started.</p>
+  <p class="empty">Nenhum projeto ainda. Crie um acima para começar.</p>
 {:else}
   <div class="projects-grid">
     {#each projects as p}

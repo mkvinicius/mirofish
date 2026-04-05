@@ -38,7 +38,7 @@
 
   async function generate() {
     error = ''
-    const req = scenarioInput.trim() || $simRequirement || 'Social simulation analysis'
+    const req = scenarioInput.trim() || $simRequirement || 'Análise de simulação social'
     simRequirement.set(req)
     try {
       status = await api.generateReport($currentProject.id, req)
@@ -177,25 +177,25 @@
   .next-btn { margin-top: 24px; display: flex; justify-content: flex-end; }
 </style>
 
-<h2>Step 4 — Generate Report</h2>
-<p class="desc">The ReACT agent analyzes the simulation using InsightForge, PanoramaSearch, QuickSearch, and InterviewAgents — streaming progress in real time.</p>
+<h2>Passo 4 — Gerar Relatório</h2>
+<p class="desc">O agente ReACT analisa a simulação usando InsightForge, PanoramaSearch, QuickSearch e InterviewAgents — transmitindo o progresso em tempo real.</p>
 
 {#if error}<p class="error">{error}</p>{/if}
 
 {#if !status || status.status === 'not_found' || !status.status}
-  <label>Scenario (sim requirement)</label>
-  <input bind:value={scenarioInput} placeholder="e.g. Government announces AI regulation policy..." />
-  <button on:click={generate}>Generate Report</button>
+  <label>Cenário (requisito da simulação)</label>
+  <input bind:value={scenarioInput} placeholder="ex: Governo anuncia regulação de IA..." />
+  <button on:click={generate}>Gerar Relatório</button>
 
 {:else if status.status === 'planning'}
   <div class="btn-row">
-    <span class="status-pill planning"><span class="spinner"></span> Planning outline...</span>
+    <span class="status-pill planning"><span class="spinner"></span> Planejando estrutura...</span>
   </div>
-  <p style="color: #64748b; font-size: 0.85rem; margin-top: 12px">Analyzing scenario and structuring the report sections.</p>
+  <p style="color: #64748b; font-size: 0.85rem; margin-top: 12px">Analisando cenário e estruturando as seções do relatório.</p>
 
 {:else if status.status === 'generating'}
   <div class="btn-row">
-    <span class="status-pill generating"><span class="spinner"></span> Generating...</span>
+    <span class="status-pill generating"><span class="spinner"></span> Gerando...</span>
   </div>
   {#if status.outline}
     <div class="outline">
@@ -207,28 +207,28 @@
       </ul>
     </div>
   {/if}
-  <p style="color: #64748b; font-size: 0.85rem">ReACT agent gathering evidence — updates stream in real time.</p>
+  <p style="color: #64748b; font-size: 0.85rem">Agente ReACT coletando evidências — atualizações em tempo real.</p>
 
 {:else if status.status === 'completed'}
   <div class="btn-row">
-    <span class="status-pill completed">✓ Report ready</span>
-    <button class="secondary" on:click={generate}>Regenerate</button>
-    <button class="export" on:click={exportReport}>↓ Export .md</button>
+    <span class="status-pill completed">✓ Relatório pronto</span>
+    <button class="secondary" on:click={generate}>Regenerar</button>
+    <button class="export" on:click={exportReport}>↓ Exportar .md</button>
   </div>
   <div class="report-body">{@html renderMarkdown(status.content)}</div>
   <div class="next-btn">
-    <button on:click={() => $currentStep = 5}>Next: Deep Interaction →</button>
+    <button on:click={() => $currentStep = 5}>Próximo: Interação Profunda →</button>
   </div>
 
 {:else if status.status === 'error'}
-  <span class="status-pill err">Error</span>
+  <span class="status-pill err">Erro</span>
   <p style="color: #ef4444; font-size: 0.85rem; margin-top: 8px">{status.error || status.content}</p>
-  <label style="margin-top: 16px">Scenario</label>
-  <input bind:value={scenarioInput} placeholder="Describe the scenario..." />
-  <button style="margin-top: 8px" on:click={generate}>Retry</button>
+  <label style="margin-top: 16px">Cenário</label>
+  <input bind:value={scenarioInput} placeholder="Descreva o cenário..." />
+  <button style="margin-top: 8px" on:click={generate}>Tentar novamente</button>
 
 {:else}
-  <label>Scenario</label>
-  <input bind:value={scenarioInput} placeholder="Describe the scenario..." />
-  <button on:click={generate}>Generate Report</button>
+  <label>Cenário</label>
+  <input bind:value={scenarioInput} placeholder="Descreva o cenário..." />
+  <button on:click={generate}>Gerar Relatório</button>
 {/if}

@@ -107,20 +107,20 @@
   }
 </style>
 
-<h2>Step 2 — Generate Agents</h2>
-<p class="desc">PicoFish creates OASIS-compatible agent profiles from your graph entities — each with unique personality, stance, activity level, and behavioral config.</p>
+<h2>Passo 2 — Gerar Agentes</h2>
+<p class="desc">O PicoFish cria perfis de agentes compatíveis com OASIS a partir das entidades do grafo — cada um com personalidade única, posicionamento, nível de atividade e comportamento configurado.</p>
 
 <div class="actions">
   <button on:click={generate} disabled={loading}>
-    {#if loading}Generating...{:else}Generate Agent Profiles{/if}
+    {#if loading}Gerando...{:else}Gerar Perfis de Agentes{/if}
   </button>
-  {#if loading}<span class="loading">Creating profiles via LLM (may take a moment)...</span>{/if}
+  {#if loading}<span class="loading">Criando perfis via LLM (pode levar um momento)...</span>{/if}
   {#if error}<span class="error">{error}</span>{/if}
 </div>
 
 {#if agents.length > 0}
   <p style="margin-bottom: 16px; font-size: 0.85rem; color: #64748b;">
-    <span class="count">{agents.length}</span> agents ready
+    <span class="count">{agents.length}</span> agentes prontos
   </p>
   <div class="agents-grid">
     {#each agents as a}
@@ -128,7 +128,7 @@
         <div class="agent-header">
           <div>
             <div class="agent-name">{a.name}</div>
-            <div class="agent-meta">@{a.user_name} · {a.age || '?'}y · {a.profession || a.source_entity_type}</div>
+            <div class="agent-meta">@{a.user_name} · {a.age || '?'}a · {a.profession || a.source_entity_type}</div>
           </div>
           <span class="platform-badge">{a.platform}</span>
         </div>
@@ -144,21 +144,21 @@
 
         <div class="bars">
           <div class="bar-row">
-            <span class="bar-label">Activity</span>
+            <span class="bar-label">Atividade</span>
             <div class="bar-track">
               <div class="bar-fill" style="width:{activityBar(a.activity_level)}%; background:#38bdf8"></div>
             </div>
             <span>{activityBar(a.activity_level)}%</span>
           </div>
           <div class="bar-row">
-            <span class="bar-label">Sentiment</span>
+            <span class="bar-label">Sentimento</span>
             <div class="bar-track">
               <div class="bar-fill" style="width:{activityBar((a.sentiment_bias+1)/2)}%; background:{sentimentColor(a.sentiment_bias)}"></div>
             </div>
             <span style="color:{sentimentColor(a.sentiment_bias)}">{a.sentiment_bias > 0 ? '+' : ''}{(a.sentiment_bias || 0).toFixed(1)}</span>
           </div>
           <div class="bar-row">
-            <span class="bar-label">Influence</span>
+            <span class="bar-label">Influência</span>
             <div class="bar-track">
               <div class="bar-fill" style="width:{Math.round((a.influence_weight||1)/3*100)}%; background:#a78bfa"></div>
             </div>
@@ -174,6 +174,6 @@
   </div>
 
   <div class="next-btn">
-    <button on:click={() => $currentStep = 3}>Next: Run Simulation →</button>
+    <button on:click={() => $currentStep = 3}>Próximo: Rodar Simulação →</button>
   </div>
 {/if}

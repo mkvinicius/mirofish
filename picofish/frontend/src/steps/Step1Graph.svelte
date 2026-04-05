@@ -60,12 +60,6 @@
   }
   button:hover { background: #7dd3fc; }
   button:disabled { opacity: 0.5; cursor: not-allowed; }
-  button.secondary {
-    background: transparent;
-    border: 1px solid #334155;
-    color: #94a3b8;
-  }
-  button.secondary:hover { border-color: #38bdf8; color: #38bdf8; }
 
   .result-card {
     background: #1e293b;
@@ -120,21 +114,21 @@
   .next-btn { margin-top: 24px; display: flex; justify-content: flex-end; }
 </style>
 
-<h2>Step 1 — Build Knowledge Graph</h2>
-<p class="desc">Paste any document, article, or text. PicoFish will extract entities and build a graph.</p>
+<h2>Passo 1 — Construir Grafo de Conhecimento</h2>
+<p class="desc">Cole qualquer documento, artigo ou texto. O PicoFish extrai entidades e constrói um grafo.</p>
 
 <textarea
   bind:value={document}
-  placeholder="Paste your document here...&#10;&#10;Example: A news article, policy document, research paper, or any text describing a scenario you want to simulate."
+  placeholder="Cole seu documento aqui...&#10;&#10;Exemplo: Uma notícia, documento de política, artigo científico ou qualquer texto descrevendo o cenário que deseja simular."
 />
 
 {#if error}<p class="error">⚠ {error}</p>{/if}
 
 <div class="actions">
   <button on:click={buildGraph} disabled={loading || !document.trim()}>
-    {#if loading}⏳ Building graph...{:else}🔨 Build Graph{/if}
+    {#if loading}⏳ Construindo grafo...{:else}🔨 Construir Grafo{/if}
   </button>
-  {#if loading}<span class="loading">Extracting entities via LLM...</span>{/if}
+  {#if loading}<span class="loading">Extraindo entidades via LLM...</span>{/if}
 </div>
 
 {#if result}
@@ -142,11 +136,11 @@
     <div class="stat-row">
       <div class="stat">
         <div class="stat-num">{result.node_count}</div>
-        <div class="stat-label">Entities</div>
+        <div class="stat-label">Entidades</div>
       </div>
       <div class="stat">
         <div class="stat-num">{result.edge_count}</div>
-        <div class="stat-label">Relations</div>
+        <div class="stat-label">Relações</div>
       </div>
     </div>
     <div class="types">
@@ -159,7 +153,7 @@
 
 {#if nodes.length > 0}
   <div class="nodes-section">
-    <h3>Graph Entities ({nodes.length})</h3>
+    <h3>Entidades do Grafo ({nodes.length})</h3>
     <div class="node-list">
       {#each nodes as n}
         <div class="node-item">
@@ -176,6 +170,6 @@
   </div>
 
   <div class="next-btn">
-    <button on:click={() => $currentStep = 2}>Next: Generate Agents →</button>
+    <button on:click={() => $currentStep = 2}>Próximo: Gerar Agentes →</button>
   </div>
 {/if}
