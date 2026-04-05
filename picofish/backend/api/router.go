@@ -7,23 +7,40 @@ import (
 	"strings"
 )
 
-// Router is a minimal HTTP router with pattern matching and CORS.
+// Router is a minimal HTTP router with method dispatch per path.
+// Each path is registered once; multiple methods are dispatched internally.
+// Compatible with Go 1.21+.
 type Router struct {
-	mux *http.ServeMux
+	mux      *http.ServeMux
+	handlers map[string]map[string]http.HandlerFunc
 }
 
 func NewRouter() *Router {
-	return &Router{mux: http.NewServeMux()}
+	return &Router{
+		mux:      http.NewServeMux(),
+		handlers: make(map[string]map[string]http.HandlerFunc),
+	}
 }
 
-// Handle registers a handler with method+path routing.
-// Uses Go 1.22+ method-qualified patterns ("GET /path") to avoid duplicate registrations.
-// OPTIONS is handled globally in ServeHTTP before the mux.
+// Handle registers method+path. If the path is new, registers it in the mux once.
 func (r *Router) Handle(method, path string, h http.HandlerFunc) {
-	r.mux.HandleFunc(method+" "+path, func(w http.ResponseWriter, req *http.Request) {
-		setCORS(w)
-		h(w, req)
-	})
+	if r.handlers[path] == nil {
+		r.handlers[path] = make(map[string]http.HandlerFunc)
+		p := path // capture for closure
+		r.mux.HandleFunc(path, func(w http.ResponseWriter, req *http.Request) {
+			setCORS(w)
+			if req.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			if fn, ok := r.handlers[p][req.Method]; ok {
+				fn(w, req)
+				return
+			}
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		})
+	}
+	r.handlers[path][method] = h
 }
 
 // ServeHTTP implements http.Handler with global CORS preflight support.
