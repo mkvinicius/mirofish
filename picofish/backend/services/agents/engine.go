@@ -380,9 +380,9 @@ func (m *Manager) runLoop(ctx context.Context, projectID, simID string,
 	// Persist memories for next simulation
 	persistMemories(projectID, memories)
 
-	// Save simulation run to history
+	// Mark completed before saving history so the stored status is correct
+	state.Status = "completed"
 	saveSimHistory(projectID, simID, state)
-
 	m.setStatus(projectID, "completed")
 }
 
