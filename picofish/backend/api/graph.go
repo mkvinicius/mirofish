@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	graphsvc "picofish/services/graph"
+	"picofish/services/llm"
 )
 
 func handleBuildGraph(w http.ResponseWriter, req *http.Request) {
@@ -53,11 +54,12 @@ func handleSearchGraph(w http.ResponseWriter, req *http.Request) {
 		Err(w, http.StatusBadRequest, "q is required")
 		return
 	}
-	nodes, err := graphsvc.Search(projectID, q)
+	emb, err := llm.Embed(req.Context(), q)
 	if err != nil {
 		Err(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	nodes, _ := graphsvc.SemanticSearch(projectID, emb, 10)
 	if nodes == nil {
 		nodes = []graphsvc.Node{}
 	}

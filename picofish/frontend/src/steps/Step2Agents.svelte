@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte'
   import { api } from '../lib/api.js'
-  import { currentProject, currentStep } from '../stores/project.js'
+  import { currentProject, currentStep, simRequirement } from '../stores/project.js'
 
   let agents = []
   let loading = false
@@ -14,7 +14,7 @@
   async function generate() {
     loading = true; error = ''
     try {
-      const res = await api.generateProfiles($currentProject.id, [])
+      const res = await api.generateProfiles($currentProject.id, [], $simRequirement)
       agents = res.agents || []
     } catch(e) { error = e.message }
     loading = false
@@ -28,6 +28,13 @@
 
   function activityBar(v) {
     return Math.round((v || 0) * 100)
+  }
+
+  function stanceColor(s) {
+    if (s === 'supportive') return '#22c55e'
+    if (s === 'opposing') return '#ef4444'
+    if (s === 'observer') return '#a78bfa'
+    return '#f59e0b'
   }
 </script>
 
@@ -47,13 +54,6 @@
   }
   button:hover { background: #7dd3fc; }
   button:disabled { opacity: 0.5; cursor: not-allowed; }
-  button.secondary {
-    background: transparent;
-    border: 1px solid #334155;
-    color: #94a3b8;
-    margin-left: 12px;
-  }
-  button.secondary:hover { border-color: #38bdf8; color: #38bdf8; }
 
   .actions { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
   .loading { color: #64748b; font-size: 0.85rem; }
@@ -91,21 +91,31 @@
   .bar-track { flex: 1; height: 4px; background: #0f172a; border-radius: 2px; }
   .bar-fill { height: 100%; border-radius: 2px; }
 
-  .agent-bg { font-size: 0.75rem; color: #64748b; margin-top: 8px; line-height: 1.4; }
+  .agent-bio { font-size: 0.75rem; color: #64748b; margin-top: 8px; line-height: 1.4; }
 
   .next-btn { margin-top: 24px; display: flex; justify-content: flex-end; }
   .count { color: #38bdf8; font-weight: 600; }
+
+  .platform-badge {
+    font-size: 0.68rem;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: #0f172a;
+    border: 1px solid #334155;
+    color: #64748b;
+    margin-left: auto;
+  }
 </style>
 
 <h2>Step 2 — Generate Agents</h2>
-<p class="desc">PicoFish creates agent profiles from your graph entities. Each agent has unique personality, behavior, and background.</p>
+<p class="desc">PicoFish creates OASIS-compatible agent profiles from your graph entities — each with unique personality, stance, activity level, and behavioral config.</p>
 
 <div class="actions">
   <button on:click={generate} disabled={loading}>
-    {#if loading}⏳ Generating...{:else}🤖 Generate Agent Profiles{/if}
+    {#if loading}Generating...{:else}Generate Agent Profiles{/if}
   </button>
   {#if loading}<span class="loading">Creating profiles via LLM (may take a moment)...</span>{/if}
-  {#if error}<span class="error">⚠ {error}</span>{/if}
+  {#if error}<span class="error">{error}</span>{/if}
 </div>
 
 {#if agents.length > 0}
@@ -118,14 +128,17 @@
         <div class="agent-header">
           <div>
             <div class="agent-name">{a.name}</div>
-            <div class="agent-meta">{a.age}y · {a.profession}</div>
+            <div class="agent-meta">@{a.user_name} · {a.age || '?'}y · {a.profession || a.source_entity_type}</div>
           </div>
+          <span class="platform-badge">{a.platform}</span>
         </div>
 
         <div class="agent-tags">
-          <span class="tag">🧠 {a.personality}</span>
-          {#each (a.interests || '').split(',').slice(0, 2) as i}
-            {#if i.trim()}<span class="tag">{i.trim()}</span>{/if}
+          {#if a.mbti}<span class="tag">{a.mbti}</span>{/if}
+          {#if a.country}<span class="tag">{a.country}</span>{/if}
+          {#if a.stance}<span class="tag" style="color:{stanceColor(a.stance)}">{a.stance}</span>{/if}
+          {#each (a.interested_topics || []).slice(0, 2) as t}
+            <span class="tag">{t}</span>
           {/each}
         </div>
 
@@ -144,10 +157,17 @@
             </div>
             <span style="color:{sentimentColor(a.sentiment_bias)}">{a.sentiment_bias > 0 ? '+' : ''}{(a.sentiment_bias || 0).toFixed(1)}</span>
           </div>
+          <div class="bar-row">
+            <span class="bar-label">Influence</span>
+            <div class="bar-track">
+              <div class="bar-fill" style="width:{Math.round((a.influence_weight||1)/3*100)}%; background:#a78bfa"></div>
+            </div>
+            <span>{(a.influence_weight || 1).toFixed(1)}x</span>
+          </div>
         </div>
 
-        {#if a.background}
-          <p class="agent-bg">{a.background.slice(0, 100)}{a.background.length > 100 ? '...' : ''}</p>
+        {#if a.bio}
+          <p class="agent-bio">{a.bio.slice(0, 100)}{a.bio.length > 100 ? '...' : ''}</p>
         {/if}
       </div>
     {/each}

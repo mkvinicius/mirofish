@@ -20,37 +20,43 @@ func main() {
 	r := api.NewRouter()
 	api.RegisterProjects(r)
 
-	// Health check
 	r.Handle("GET", "/health", func(w http.ResponseWriter, _ *http.Request) {
 		api.JSON(w, http.StatusOK, map[string]string{
 			"status":  "ok",
-			"version": "1.0.0",
+			"version": "2.0.0",
 			"name":    "PicoFish",
 		})
 	})
 
-	// Serve Svelte frontend (SPA)
 	frontendDir := config.Global.FrontendDir
 	if _, err := os.Stat(frontendDir); err == nil {
-		http.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.Dir(frontendDir+"/assets"))))
+		fs := http.FileServer(http.Dir(frontendDir))
 		http.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
-			// For SPA: serve index.html for non-API, non-asset paths
-			if len(req.URL.Path) > 4 && req.URL.Path[:4] == "/api" {
+			// API requests go to the router
+			if len(req.URL.Path) >= 4 && req.URL.Path[:4] == "/api" {
 				r.ServeHTTP(w, req)
 				return
 			}
-			http.ServeFile(w, req, frontendDir+"/index.html")
+			// Static assets served directly; everything else gets index.html (SPA)
+			if req.URL.Path != "/" {
+				if _, err := os.Stat(frontendDir + req.URL.Path); err != nil {
+					http.ServeFile(w, req, frontendDir+"/index.html")
+					return
+				}
+			}
+			fs.ServeHTTP(w, req)
 		})
-		http.Handle("/api/", r)
 	} else {
-		// No frontend built — serve API only
 		http.Handle("/", r)
 	}
 
 	addr := ":" + config.Global.Port
-	log.Printf("🐟 PicoFish running on http://localhost%s", addr)
-	log.Printf("   LLM: %s | Model: %s", config.Global.LLMBaseURL, config.Global.LLMModel)
-	log.Printf("   Data: %s", config.Global.DataDir)
+	log.Printf("PicoFish v2 running on http://localhost%s", addr)
+	log.Printf("  LLM: %s | Model: %s", config.Global.LLMBaseURL, config.Global.LLMModel)
+	if config.Global.EmbedModel != "" {
+		log.Printf("  Embed model: %s", config.Global.EmbedModel)
+	}
+	log.Printf("  Data: %s", config.Global.DataDir)
 
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Fatalf("server: %v", err)

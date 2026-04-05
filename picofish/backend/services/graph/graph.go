@@ -1,5 +1,5 @@
-// Package graph implements a lightweight knowledge graph backed by JSON files.
-// It replaces Zep Cloud from the original MiroFish with zero external dependencies.
+// Package graph implements a knowledge graph with semantic vector search,
+// replacing Zep Cloud with a fully local, embedding-powered store.
 package graph
 
 import (
@@ -7,37 +7,46 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"picofish/services/llm"
 	"picofish/storage"
 )
 
-// Ontology describes entity types and relation types for a project.
-type Ontology struct {
-	EntityTypes   []string `json:"entity_types"`
-	RelationTypes []string `json:"relation_types"`
-}
+// ── Data types ─────────────────────────────────────────────────────────────
 
-// Node is a knowledge graph node (entity).
 type Node struct {
-	ID         string            `json:"id"`
-	ProjectID  string            `json:"project_id"`
-	Type       string            `json:"type"`
-	Name       string            `json:"name"`
-	Properties map[string]string `json:"properties"`
+	ID        string            `json:"id"`
+	ProjectID string            `json:"project_id"`
+	Type      string            `json:"type"`       // entity type
+	Name      string            `json:"name"`
+	Labels    []string          `json:"labels"`     // ["Entity", "Person"]
+	Summary   string            `json:"summary"`
+	Attrs     map[string]string `json:"attributes"`
+	Embedding []float64         `json:"embedding,omitempty"`
+	CreatedAt string            `json:"created_at"`
 }
 
-// Edge is a directional relationship between two nodes.
 type Edge struct {
-	ID         string `json:"id"`
-	ProjectID  string `json:"project_id"`
-	SourceID   string `json:"source_id"`
-	TargetID   string `json:"target_id"`
-	Relation   string `json:"relation"`
+	ID             string    `json:"id"`
+	ProjectID      string    `json:"project_id"`
+	SourceID       string    `json:"source_id"`
+	TargetID       string    `json:"target_id"`
+	SourceName     string    `json:"source_name"`
+	TargetName     string    `json:"target_name"`
+	Relation       string    `json:"relation"`
+	Fact           string    `json:"fact"`           // human-readable fact
+	Embedding      []float64 `json:"embedding,omitempty"`
+	ValidAt        string    `json:"valid_at"`       // temporal: when fact became valid
+	InvalidAt      string    `json:"invalid_at"`     // temporal: when fact became invalid
+	ExpiredAt      string    `json:"expired_at"`     // when overridden by simulation update
+	CreatedAt      string    `json:"created_at"`
 }
 
-// GraphSummary is returned after building a graph.
+func (e *Edge) IsActive() bool  { return e.InvalidAt == "" && e.ExpiredAt == "" }
+func (e *Edge) IsExpired() bool { return e.ExpiredAt != "" }
+
 type GraphSummary struct {
 	ProjectID   string   `json:"project_id"`
 	NodeCount   int      `json:"node_count"`
@@ -45,41 +54,49 @@ type GraphSummary struct {
 	EntityTypes []string `json:"entity_types"`
 }
 
-// BuildFromDocument extracts entities and relations from text using the LLM,
-// then persists them in the JSON store.
+// ── Graph construction ─────────────────────────────────────────────────────
+
+// BuildFromDocument extracts an ontology, entities, and relations from text
+// using the LLM, generates embeddings for each, and persists to the store.
 func BuildFromDocument(ctx context.Context, projectID, document string) (*GraphSummary, error) {
+	// Step 1: ontology
 	ont, err := generateOntology(ctx, document)
 	if err != nil {
 		return nil, fmt.Errorf("ontology: %w", err)
 	}
 
+	// Step 2: entity + relation extraction
 	nodes, edges, err := extractEntities(ctx, projectID, document, ont)
 	if err != nil {
 		return nil, fmt.Errorf("extract: %w", err)
 	}
 
-	for _, n := range nodes {
-		r := storage.Record{
-			"id":          n.ID,
-			"project_id":  n.ProjectID,
-			"type":        n.Type,
-			"name":        n.Name,
-			"properties":  propsToJSON(n.Properties),
-		}
-		if err := storage.DB.Insert("graph_nodes", n.ID, r); err != nil {
+	// Step 3: generate embeddings concurrently (best-effort)
+	embedNodes(ctx, nodes)
+	embedEdges(ctx, edges)
+
+	// Step 4: persist
+	for i := range nodes {
+		if err := saveNode(&nodes[i]); err != nil {
 			return nil, err
 		}
 	}
-
-	for _, e := range edges {
-		r := storage.Record{
-			"id":         e.ID,
-			"project_id": e.ProjectID,
-			"source_id":  e.SourceID,
-			"target_id":  e.TargetID,
-			"relation":   e.Relation,
+	nodeByName := make(map[string]*Node)
+	for i := range nodes {
+		nodeByName[nodes[i].Name] = &nodes[i]
+	}
+	for i := range edges {
+		// Resolve names
+		if src, ok := nodeByName[edges[i].SourceName]; ok {
+			edges[i].SourceID = src.ID
 		}
-		if err := storage.DB.Insert("graph_edges", e.ID, r); err != nil {
+		if tgt, ok := nodeByName[edges[i].TargetName]; ok {
+			edges[i].TargetID = tgt.ID
+		}
+		if edges[i].SourceID == "" || edges[i].TargetID == "" {
+			continue // skip unresolved edges
+		}
+		if err := saveEdge(&edges[i]); err != nil {
 			return nil, err
 		}
 	}
@@ -92,10 +109,15 @@ func BuildFromDocument(ctx context.Context, projectID, document string) (*GraphS
 	}, nil
 }
 
-func generateOntology(ctx context.Context, document string) (*Ontology, error) {
-	prompt := fmt.Sprintf(`Analyze this document and define an ontology for a knowledge graph.
-Return ONLY valid JSON with this exact structure:
-{"entity_types": ["Type1", "Type2", ...], "relation_types": ["RELATION1", "RELATION2", ...]}
+type ontology struct {
+	EntityTypes   []string `json:"entity_types"`
+	RelationTypes []string `json:"relation_types"`
+}
+
+func generateOntology(ctx context.Context, document string) (*ontology, error) {
+	prompt := fmt.Sprintf(`Analyze this document and define a knowledge graph ontology.
+Return ONLY valid JSON:
+{"entity_types": ["Type1","Type2",...], "relation_types": ["RELATION1","RELATION2",...]}
 
 Rules:
 - 6-10 specific entity types relevant to the content
@@ -103,98 +125,154 @@ Rules:
 - No explanation, just JSON
 
 Document:
-%s`, truncate(document, 3000))
+%s`, trunc(document, 3000))
 
 	resp, err := llm.Chat(ctx, []llm.Message{llm.User(prompt)}, llm.WithTemperature(0.2))
 	if err != nil {
 		return nil, err
 	}
-	var ont Ontology
-	if err := extractJSON(resp, &ont); err != nil {
+	var ont ontology
+	if err := llm.ParseJSON(resp, &ont); err != nil {
 		return nil, fmt.Errorf("parse ontology: %w", err)
 	}
 	return &ont, nil
 }
 
-func extractEntities(ctx context.Context, projectID, document string, ont *Ontology) ([]Node, []Edge, error) {
-	prompt := fmt.Sprintf(`Extract entities and relationships from the document.
+func extractEntities(ctx context.Context, projectID, document string, ont *ontology) ([]Node, []Edge, error) {
+	prompt := fmt.Sprintf(`Extract ALL entities and relationships from the document.
 
-Entity types: %s
-Relation types: %s
+Entity types available: %s
+Relation types available: %s
 
 Return ONLY valid JSON:
 {
-  "entities": [{"type": "TypeName", "name": "Entity Name", "description": "brief description"}],
-  "relations": [{"source": "Entity Name", "target": "Entity Name", "relation": "RELATION_TYPE"}]
+  "entities": [
+    {"type":"TypeName","name":"Entity Name","summary":"2-3 sentence description","attributes":{"key":"value"}}
+  ],
+  "relations": [
+    {"source":"Entity A","target":"Entity B","relation":"RELATION_TYPE","fact":"Full sentence stating the relationship"}
+  ]
 }
 
 Document:
-%s`, strings.Join(ont.EntityTypes, ", "), strings.Join(ont.RelationTypes, ", "), truncate(document, 4000))
+%s`,
+		strings.Join(ont.EntityTypes, ", "),
+		strings.Join(ont.RelationTypes, ", "),
+		trunc(document, 5000))
 
-	resp, err := llm.Chat(ctx, []llm.Message{llm.User(prompt)}, llm.WithTemperature(0.3), llm.WithMaxTokens(8192))
+	resp, err := llm.Chat(ctx, []llm.Message{llm.User(prompt)},
+		llm.WithTemperature(0.2), llm.WithMaxTokens(8192))
 	if err != nil {
 		return nil, nil, err
 	}
 
 	var raw struct {
 		Entities []struct {
-			Type        string `json:"type"`
-			Name        string `json:"name"`
-			Description string `json:"description"`
+			Type       string            `json:"type"`
+			Name       string            `json:"name"`
+			Summary    string            `json:"summary"`
+			Attributes map[string]string `json:"attributes"`
 		} `json:"entities"`
 		Relations []struct {
 			Source   string `json:"source"`
 			Target   string `json:"target"`
 			Relation string `json:"relation"`
+			Fact     string `json:"fact"`
 		} `json:"relations"`
 	}
 
-	if err := extractJSON(resp, &raw); err != nil {
+	if err := llm.ParseJSON(resp, &raw); err != nil {
 		return nil, nil, fmt.Errorf("parse entities: %w", err)
 	}
 
-	nodeMap := make(map[string]*Node)
+	now := time.Now().Format(time.RFC3339)
 	var nodes []Node
 	for _, e := range raw.Entities {
-		n := Node{
+		if e.Name == "" {
+			continue
+		}
+		labels := []string{"Entity", e.Type}
+		nodes = append(nodes, Node{
 			ID:        uuid.NewString(),
 			ProjectID: projectID,
 			Type:      e.Type,
 			Name:      e.Name,
-			Properties: map[string]string{
-				"description": e.Description,
-			},
-		}
-		nodes = append(nodes, n)
-		nodeMap[e.Name] = &nodes[len(nodes)-1]
+			Labels:    labels,
+			Summary:   e.Summary,
+			Attrs:     e.Attributes,
+			CreatedAt: now,
+		})
 	}
 
 	var edges []Edge
 	for _, r := range raw.Relations {
-		src, ok1 := nodeMap[r.Source]
-		tgt, ok2 := nodeMap[r.Target]
-		if !ok1 || !ok2 {
-			continue
+		fact := r.Fact
+		if fact == "" {
+			fact = fmt.Sprintf("%s %s %s", r.Source, strings.ToLower(r.Relation), r.Target)
 		}
 		edges = append(edges, Edge{
-			ID:        uuid.NewString(),
-			ProjectID: projectID,
-			SourceID:  src.ID,
-			TargetID:  tgt.ID,
-			Relation:  r.Relation,
+			ID:         uuid.NewString(),
+			ProjectID:  projectID,
+			SourceName: r.Source,
+			TargetName: r.Target,
+			Relation:   r.Relation,
+			Fact:       fact,
+			ValidAt:    now,
+			CreatedAt:  now,
 		})
 	}
 
 	return nodes, edges, nil
 }
 
+// ── Embedding generation ───────────────────────────────────────────────────
+
+func embedNodes(ctx context.Context, nodes []Node) {
+	for i := range nodes {
+		text := fmt.Sprintf("%s: %s. %s", nodes[i].Type, nodes[i].Name, nodes[i].Summary)
+		if emb, err := llm.Embed(ctx, text); err == nil {
+			nodes[i].Embedding = emb
+		}
+	}
+}
+
+func embedEdges(ctx context.Context, edges []Edge) {
+	for i := range edges {
+		if emb, err := llm.Embed(ctx, edges[i].Fact); err == nil {
+			edges[i].Embedding = emb
+		}
+	}
+}
+
+// ── Persistence ────────────────────────────────────────────────────────────
+
+func saveNode(n *Node) error {
+	b, _ := json.Marshal(n)
+	return storage.DB.Insert("graph_nodes", n.ID, storage.Record{
+		"id": n.ID, "project_id": n.ProjectID,
+		"type": n.Type, "name": n.Name,
+		"data": string(b),
+	})
+}
+
+func saveEdge(e *Edge) error {
+	b, _ := json.Marshal(e)
+	return storage.DB.Insert("graph_edges", e.ID, storage.Record{
+		"id": e.ID, "project_id": e.ProjectID,
+		"source_id": e.SourceID, "target_id": e.TargetID,
+		"relation": e.Relation,
+		"data": string(b),
+	})
+}
+
+// ── Query functions ────────────────────────────────────────────────────────
+
 // GetNodes returns all nodes for a project, optionally filtered by type.
-func GetNodes(projectID string, entityTypes []string) ([]Node, error) {
+func GetNodes(projectID string, types []string) ([]Node, error) {
 	typeSet := make(map[string]bool)
-	for _, t := range entityTypes {
+	for _, t := range types {
 		typeSet[t] = true
 	}
-
 	records := storage.DB.QueryFunc("graph_nodes", func(r storage.Record) bool {
 		if storage.GetStr(r, "project_id") != projectID {
 			return false
@@ -204,71 +282,141 @@ func GetNodes(projectID string, entityTypes []string) ([]Node, error) {
 		}
 		return true
 	})
-
-	var nodes []Node
-	for _, r := range records {
-		nodes = append(nodes, recordToNode(r))
-	}
-	return nodes, nil
+	return parseNodes(records), nil
 }
 
-// Search does a simple keyword search across node names and properties.
-func Search(projectID, query string) ([]Node, error) {
-	q := strings.ToLower(query)
-	records := storage.DB.QueryFunc("graph_nodes", func(r storage.Record) bool {
-		if storage.GetStr(r, "project_id") != projectID {
-			return false
-		}
-		name := strings.ToLower(storage.GetStr(r, "name"))
-		props := strings.ToLower(storage.GetStr(r, "properties"))
-		return strings.Contains(name, q) || strings.Contains(props, q)
+// GetEdges returns all edges for a project.
+func GetEdges(projectID string) ([]Edge, error) {
+	records := storage.DB.QueryFunc("graph_edges", func(r storage.Record) bool {
+		return storage.GetStr(r, "project_id") == projectID
 	})
-
-	var nodes []Node
-	for _, r := range records {
-		nodes = append(nodes, recordToNode(r))
-	}
-	return nodes, nil
+	return parseEdges(records), nil
 }
 
-func recordToNode(r storage.Record) Node {
-	n := Node{
-		ID:         storage.GetStr(r, "id"),
-		ProjectID:  storage.GetStr(r, "project_id"),
-		Type:       storage.GetStr(r, "type"),
-		Name:       storage.GetStr(r, "name"),
-		Properties: map[string]string{},
-	}
-	propsStr := storage.GetStr(r, "properties")
-	if propsStr != "" {
-		_ = json.Unmarshal([]byte(propsStr), &n.Properties)
-	}
-	return n
+// GetNodeEdges returns all edges involving a specific node.
+func GetNodeEdges(nodeID string) ([]Edge, error) {
+	records := storage.DB.QueryFunc("graph_edges", func(r storage.Record) bool {
+		return storage.GetStr(r, "source_id") == nodeID ||
+			storage.GetStr(r, "target_id") == nodeID
+	})
+	return parseEdges(records), nil
 }
 
-func propsToJSON(props map[string]string) string {
-	b, _ := json.Marshal(props)
-	return string(b)
-}
+// UpdateEdgeTemporal marks an edge as expired and inserts the new version.
+// Called by the simulation memory updater.
+func UpdateEdgeTemporal(ctx context.Context, oldEdgeID, projectID, sourceID, targetID, sourceName, targetName, relation, fact string) error {
+	now := time.Now().Format(time.RFC3339)
 
-func extractJSON(s string, v interface{}) error {
-	s = strings.TrimSpace(s)
-	for _, fence := range []string{"```json", "```"} {
-		if idx := strings.Index(s, fence); idx >= 0 {
-			s = s[idx+len(fence):]
-			if end := strings.Index(s, "```"); end >= 0 {
-				s = s[:end]
-			}
-			break
+	// Expire old edge
+	if rec, ok := storage.DB.Get("graph_edges", oldEdgeID); ok {
+		var old Edge
+		if err := json.Unmarshal([]byte(storage.GetStr(rec, "data")), &old); err == nil {
+			old.ExpiredAt = now
+			b, _ := json.Marshal(old)
+			_ = storage.DB.Update("graph_edges", oldEdgeID, storage.Record{"data": string(b)})
 		}
 	}
-	if idx := strings.IndexAny(s, "{["); idx >= 0 {
-		s = s[idx:]
+
+	// Create updated edge
+	newEdge := Edge{
+		ID:         uuid.NewString(),
+		ProjectID:  projectID,
+		SourceID:   sourceID,
+		TargetID:   targetID,
+		SourceName: sourceName,
+		TargetName: targetName,
+		Relation:   relation,
+		Fact:       fact,
+		ValidAt:    now,
+		CreatedAt:  now,
 	}
-	return json.Unmarshal([]byte(strings.TrimSpace(s)), v)
+	if emb, err := llm.Embed(ctx, fact); err == nil {
+		newEdge.Embedding = emb
+	}
+	return saveEdge(&newEdge)
 }
 
-func truncate(s string, max int) string {
+// scoredItem is used for ranked semantic search results.
+type scoredItem struct {
+	score float64
+	idx   int
+}
+
+func sortScored(s []scoredItem) {
+	// Simple insertion sort (small slices)
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j].score > s[j-1].score; j-- {
+			s[j], s[j-1] = s[j-1], s[j]
+		}
+	}
+}
+
+// SemanticSearch finds nodes and edges most similar to the query embedding.
+// Returns top-k results sorted by cosine similarity.
+func SemanticSearch(projectID string, queryEmb []float64, topK int) ([]Node, []Edge) {
+	nodes, _ := GetNodes(projectID, nil)
+	edges, _ := GetEdges(projectID)
+
+	// Score nodes
+	var nodeSc []scoredItem
+	for i, n := range nodes {
+		if len(n.Embedding) > 0 {
+			nodeSc = append(nodeSc, scoredItem{llm.CosineSimilarity(queryEmb, n.Embedding), i})
+		}
+	}
+	sortScored(nodeSc)
+	if len(nodeSc) > topK {
+		nodeSc = nodeSc[:topK]
+	}
+	var topNodes []Node
+	for _, s := range nodeSc {
+		topNodes = append(topNodes, nodes[s.idx])
+	}
+
+	// Score edges
+	var edgeSc []scoredItem
+	for i, e := range edges {
+		if len(e.Embedding) > 0 {
+			edgeSc = append(edgeSc, scoredItem{llm.CosineSimilarity(queryEmb, e.Embedding), i})
+		}
+	}
+	sortScored(edgeSc)
+	if len(edgeSc) > topK*2 {
+		edgeSc = edgeSc[:topK*2]
+	}
+	var topEdges []Edge
+	for _, s := range edgeSc {
+		topEdges = append(topEdges, edges[s.idx])
+	}
+
+	return topNodes, topEdges
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+func parseNodes(records []storage.Record) []Node {
+	var nodes []Node
+	for _, r := range records {
+		var n Node
+		if err := json.Unmarshal([]byte(storage.GetStr(r, "data")), &n); err == nil {
+			nodes = append(nodes, n)
+		}
+	}
+	return nodes
+}
+
+func parseEdges(records []storage.Record) []Edge {
+	var edges []Edge
+	for _, r := range records {
+		var e Edge
+		if err := json.Unmarshal([]byte(storage.GetStr(r, "data")), &e); err == nil {
+			edges = append(edges, e)
+		}
+	}
+	return edges
+}
+
+func trunc(s string, max int) string {
 	if len(s) <= max {
 		return s
 	}

@@ -1,10 +1,11 @@
 <script>
   import { onMount, onDestroy } from 'svelte'
   import { api } from '../lib/api.js'
-  import { currentProject, currentStep } from '../stores/project.js'
+  import { currentProject, currentStep, simRequirement } from '../stores/project.js'
 
-  let topic = ''
-  let rounds = 5
+  let topic = $simRequirement || ''
+  let totalHours = 24
+  let platform = 'both'
   let status = null
   let actions = []
   let error = ''
@@ -27,9 +28,10 @@
   async function start() {
     if (!topic.trim()) return
     error = ''
+    simRequirement.set(topic)
     try {
-      await api.startSimulation($currentProject.id, rounds, topic)
-      status = { status: 'running', current_round: 0, total_rounds: rounds }
+      await api.startSimulation($currentProject.id, totalHours, platform, topic)
+      status = { status: 'running', current_hour: 0, total_hours: totalHours, agent_count: 0, action_count: 0 }
       actions = []
       if (!interval) interval = setInterval(refresh, 2000)
     } catch(e) { error = e.message }
@@ -55,11 +57,25 @@
   }
 
   function actionColor(type) {
-    return type === 'CREATE_POST' ? '#38bdf8' : type === 'COMMENT' ? '#a78bfa' : '#22c55e'
+    const colors = {
+      'CREATE_POST': '#38bdf8',
+      'COMMENT': '#a78bfa',
+      'REPLY_TO_POST': '#a78bfa',
+      'LIKE_POST': '#22c55e',
+      'UPVOTE': '#22c55e',
+      'REPOST': '#f59e0b',
+      'SHARE': '#f59e0b',
+    }
+    return colors[type] || '#64748b'
   }
 
   function platformIcon(p) {
-    return p === 'twitter' ? '🐦' : '🤖'
+    return p === 'twitter' ? '🐦' : p === 'reddit' ? '🤖' : '🌐'
+  }
+
+  function progressPct(s) {
+    if (!s || !s.total_hours || s.total_hours === 0) return 0
+    return Math.round((s.current_hour / s.total_hours) * 100)
   }
 </script>
 
@@ -86,8 +102,9 @@
     font-size: 0.9rem;
     outline: none;
   }
-  input:focus { border-color: #38bdf8; }
-  input[type=number] { max-width: 80px; }
+  input:focus, select:focus { border-color: #38bdf8; }
+  .narrow { flex: 0 0 auto; min-width: 0; }
+  .narrow input, .narrow select { min-width: 80px; }
 
   button {
     background: #38bdf8;
@@ -167,18 +184,26 @@
 </style>
 
 <h2>Step 3 — Run Simulation</h2>
-<p class="desc">Agents will interact on simulated Twitter and Reddit, producing organic social dynamics.</p>
+<p class="desc">Agents interact on simulated Twitter/Reddit over simulated hours — producing organic social dynamics with feed algorithms, echo chambers, and behavioral memory.</p>
 
-{#if error}<p class="error">⚠ {error}</p>{/if}
+{#if error}<p class="error">{error}</p>{/if}
 
 <div class="config-row">
   <div class="field" style="flex: 3">
-    <label>Topic / Initial Event *</label>
-    <input bind:value={topic} placeholder="e.g. The government announces a new energy policy..." />
+    <label>Scenario / Simulation Requirement *</label>
+    <input bind:value={topic} placeholder="e.g. Government announces strict new AI regulation policy..." />
   </div>
-  <div class="field" style="flex: 0">
-    <label>Rounds</label>
-    <input type="number" bind:value={rounds} min="1" max="20" />
+  <div class="field narrow">
+    <label>Hours</label>
+    <input type="number" bind:value={totalHours} min="1" max="168" style="min-width: 72px" />
+  </div>
+  <div class="field narrow">
+    <label>Platform</label>
+    <select bind:value={platform}>
+      <option value="both">Both</option>
+      <option value="twitter">Twitter</option>
+      <option value="reddit">Reddit</option>
+    </select>
   </div>
   {#if status?.status !== 'running'}
     <button on:click={start} disabled={!topic.trim()}>▶ Start</button>
@@ -195,15 +220,16 @@
         <span style="font-size: 0.8rem; color: #64748b">auto-refreshing...</span>
       {/if}
     </div>
-    {#if status.total_rounds > 0}
+    {#if status.total_hours > 0}
       <div class="progress-track">
-        <div class="progress-fill" style="width:{Math.round((status.current_round / status.total_rounds) * 100)}%"></div>
+        <div class="progress-fill" style="width:{progressPct(status)}%"></div>
       </div>
-      <p class="progress-text">Round {status.current_round} / {status.total_rounds}</p>
+      <p class="progress-text">Hour {status.current_hour} / {status.total_hours}</p>
     {/if}
     <div class="stats">
       <div class="stat">Agents: <span>{status.agent_count || 0}</span></div>
       <div class="stat">Actions: <span>{status.action_count || 0}</span></div>
+      {#if status.platform}<div class="stat">Platform: <span>{status.platform}</span></div>{/if}
     </div>
   </div>
 {/if}
@@ -218,7 +244,7 @@
             <span class="action-platform">{platformIcon(a.platform)}</span>
             <span class="action-agent">{a.agent_name}</span>
             <span class="action-type" style="color:{actionColor(a.action_type)}">{a.action_type}</span>
-            <span style="font-size: 0.7rem; color: #475569; margin-left: auto">Round {a.round}</span>
+            <span style="font-size: 0.7rem; color: #475569; margin-left: auto">H{a.sim_hour}</span>
           </div>
           {#if a.content}
             <p class="action-content">{a.content}</p>

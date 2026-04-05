@@ -26,19 +26,23 @@ export const api = {
   searchGraph: (id, q) => request('GET', `/projects/${id}/graph/search?q=${encodeURIComponent(q)}`),
 
   // Agents (Step 2)
-  generateProfiles: (id, entity_types) => request('POST', `/projects/${id}/agents/generate`, { entity_types }),
+  generateProfiles: (id, entity_types, sim_requirement) =>
+    request('POST', `/projects/${id}/agents/generate`, { entity_types, sim_requirement }),
   listAgents: (id) => request('GET', `/projects/${id}/agents`),
 
   // Simulation (Step 3)
-  startSimulation: (id, rounds, topic) => request('POST', `/projects/${id}/simulation/start`, { rounds, topic }),
+  startSimulation: (id, total_hours, platform, topic) =>
+    request('POST', `/projects/${id}/simulation/start`, { total_hours, platform, topic }),
   stopSimulation: (id) => request('POST', `/projects/${id}/simulation/stop`),
   getSimulationStatus: (id) => request('GET', `/projects/${id}/simulation/status`),
   getSimulationActions: (id) => request('GET', `/projects/${id}/simulation/actions`),
 
   // Report (Step 4)
-  generateReport: (id) => request('POST', `/projects/${id}/report/generate`),
+  generateReport: (id, sim_requirement) =>
+    request('POST', `/projects/${id}/report/generate`, { sim_requirement }),
   getReport: (id) => request('GET', `/projects/${id}/report`),
 
   // Chat (Step 5)
-  chat: (id, message, history) => request('POST', `/projects/${id}/chat`, { message, history })
+  chat: (id, sim_requirement, message, history) =>
+    request('POST', `/projects/${id}/chat`, { sim_requirement, message, history })
 }

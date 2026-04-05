@@ -10,7 +10,14 @@ import (
 
 func handleGenerateReport(w http.ResponseWriter, req *http.Request) {
 	projectID := extractProjectID(req.URL.Path)
-	status, err := reportsvc.Generate(req.Context(), projectID)
+	var body struct {
+		SimRequirement string `json:"sim_requirement"`
+	}
+	_ = json.NewDecoder(req.Body).Decode(&body)
+	if body.SimRequirement == "" {
+		body.SimRequirement = "Social simulation analysis"
+	}
+	status, err := reportsvc.Generate(req.Context(), projectID, body.SimRequirement)
 	if err != nil {
 		Err(w, http.StatusInternalServerError, err.Error())
 		return
@@ -31,14 +38,18 @@ func handleGetReport(w http.ResponseWriter, req *http.Request) {
 func handleChat(w http.ResponseWriter, req *http.Request) {
 	projectID := extractProjectID(req.URL.Path)
 	var body struct {
-		Message string        `json:"message"`
-		History []llm.Message `json:"history"`
+		SimRequirement string        `json:"sim_requirement"`
+		Message        string        `json:"message"`
+		History        []llm.Message `json:"history"`
 	}
 	if err := json.NewDecoder(req.Body).Decode(&body); err != nil || body.Message == "" {
 		Err(w, http.StatusBadRequest, "message is required")
 		return
 	}
-	response, err := reportsvc.Chat(req.Context(), projectID, body.Message, body.History)
+	if body.SimRequirement == "" {
+		body.SimRequirement = "Social simulation analysis"
+	}
+	response, err := reportsvc.Chat(req.Context(), projectID, body.SimRequirement, body.Message, body.History)
 	if err != nil {
 		Err(w, http.StatusInternalServerError, err.Error())
 		return

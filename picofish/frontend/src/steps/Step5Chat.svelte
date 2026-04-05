@@ -1,6 +1,6 @@
 <script>
   import { api } from '../lib/api.js'
-  import { currentProject } from '../stores/project.js'
+  import { currentProject, simRequirement } from '../stores/project.js'
 
   let messages = [] // { role: 'user'|'assistant', content: string }
   let input = ''
@@ -17,32 +17,43 @@
 
     loading = true
     try {
-      // Build history for API (all but last user message)
       const history = messages.slice(0, -1).map(m => ({ role: m.role, content: m.content }))
-      const res = await api.chat($currentProject.id, msg, history)
+      const req = $simRequirement || 'Social simulation analysis'
+      const res = await api.chat($currentProject.id, req, msg, history)
       messages = [...messages, { role: 'assistant', content: res.response }]
     } catch(e) {
       error = e.message
-      messages = messages.slice(0, -1) // remove failed user message
+      messages = messages.slice(0, -1)
     }
     loading = false
 
-    // Scroll to bottom
     setTimeout(() => { if (chatEl) chatEl.scrollTop = chatEl.scrollHeight }, 50)
   }
 
   const suggestions = [
-    'Summarize the main findings of the simulation',
-    'Which agents were most active and why?',
-    'What were the dominant sentiments expressed?',
-    'What predictions can be made based on the simulation?',
-    'Which entities had the most influence?'
+    'Summarize the main predictions of the simulation',
+    'Which agents were most influential and why?',
+    'What were the dominant sentiments across platforms?',
+    'What risks and opportunities does the simulation reveal?',
+    'How did different agent groups react to the scenario?',
+    'What cascade effects emerged from the simulation?'
   ]
 </script>
 
 <style>
   h2 { font-size: 1.2rem; font-weight: 700; margin-bottom: 4px; }
   .desc { color: #64748b; font-size: 0.85rem; margin-bottom: 20px; }
+
+  .scenario-badge {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 0.78rem;
+    color: #64748b;
+    margin-bottom: 16px;
+  }
+  .scenario-badge strong { color: #38bdf8; }
 
   .suggestions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
   .suggestion {
@@ -90,6 +101,7 @@
     border-radius: 10px;
     font-size: 0.875rem;
     line-height: 1.6;
+    white-space: pre-wrap;
   }
   .user .bubble { background: #0c4a6e; color: #e0f2fe; border-radius: 10px 10px 2px 10px; }
   .assistant .bubble { background: #0f172a; border: 1px solid #334155; color: #cbd5e1; border-radius: 10px 10px 10px 2px; }
@@ -127,7 +139,11 @@
 </style>
 
 <h2>Step 5 — Deep Interaction</h2>
-<p class="desc">Ask anything about the simulation. The AI analyst has full context of the knowledge graph and agent behaviors.</p>
+<p class="desc">Ask anything about the simulation. The AI analyst has god's-eye view of the knowledge graph, all agent behaviors, and temporal dynamics.</p>
+
+{#if $simRequirement}
+  <div class="scenario-badge">Scenario: <strong>{$simRequirement}</strong></div>
+{/if}
 
 <div class="suggestions">
   {#each suggestions as s}
@@ -138,7 +154,7 @@
 <div class="chat-window" bind:this={chatEl}>
   {#if messages.length === 0}
     <div class="empty">
-      🐟 Ask anything about the simulation results...<br>
+      Ask anything about the simulation results...<br>
       <span style="font-size: 0.75rem; margin-top: 6px; display: block">Use the suggestions above or type your own question</span>
     </div>
   {/if}
@@ -149,7 +165,7 @@
     </div>
   {/each}
   {#if loading}
-    <p class="typing">🐟 Analyzing...</p>
+    <p class="typing">Analyzing...</p>
   {/if}
 </div>
 
@@ -162,4 +178,4 @@
   />
   <button on:click={send} disabled={loading || !input.trim()}>Send</button>
 </div>
-{#if error}<p class="error">⚠ {error}</p>{/if}
+{#if error}<p class="error">{error}</p>{/if}

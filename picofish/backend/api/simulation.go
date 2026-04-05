@@ -11,7 +11,8 @@ import (
 func handleGenerateAgentProfiles(w http.ResponseWriter, req *http.Request) {
 	projectID := extractProjectID(req.URL.Path)
 	var body struct {
-		EntityTypes []string `json:"entity_types"`
+		EntityTypes    []string `json:"entity_types"`
+		SimRequirement string   `json:"sim_requirement"`
 	}
 	_ = json.NewDecoder(req.Body).Decode(&body)
 
@@ -25,7 +26,7 @@ func handleGenerateAgentProfiles(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	profiles, err := agentsvc.GenerateProfiles(req.Context(), projectID, nodes)
+	profiles, err := agentsvc.GenerateProfiles(req.Context(), projectID, nodes, body.SimRequirement)
 	if err != nil {
 		Err(w, http.StatusInternalServerError, err.Error())
 		return
@@ -41,7 +42,7 @@ func handleListAgents(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if profiles == nil {
-		profiles = []agentsvc.AgentProfile{}
+		profiles = []*agentsvc.OasisAgentProfile{}
 	}
 	JSON(w, http.StatusOK, profiles)
 }
@@ -49,24 +50,33 @@ func handleListAgents(w http.ResponseWriter, req *http.Request) {
 func handleStartSimulation(w http.ResponseWriter, req *http.Request) {
 	projectID := extractProjectID(req.URL.Path)
 	var body struct {
-		Rounds int    `json:"rounds"`
-		Topic  string `json:"topic"`
+		TotalHours int    `json:"total_hours"`
+		Platform   string `json:"platform"`
+		Topic      string `json:"topic"`
 	}
 	if err := json.NewDecoder(req.Body).Decode(&body); err != nil || body.Topic == "" {
 		Err(w, http.StatusBadRequest, "topic is required")
 		return
 	}
-	if body.Rounds <= 0 {
-		body.Rounds = 5
+	if body.TotalHours <= 0 {
+		body.TotalHours = 24
 	}
-	if body.Rounds > 20 {
-		body.Rounds = 20
+	if body.TotalHours > 168 {
+		body.TotalHours = 168
 	}
-	if err := agentsvc.Global.Start(projectID, body.Rounds, body.Topic); err != nil {
+	if body.Platform == "" {
+		body.Platform = "both"
+	}
+	if err := agentsvc.Global.Start(projectID, body.TotalHours, body.Platform, body.Topic); err != nil {
 		Err(w, http.StatusConflict, err.Error())
 		return
 	}
-	JSON(w, http.StatusOK, map[string]interface{}{"status": "started", "rounds": body.Rounds, "topic": body.Topic})
+	JSON(w, http.StatusOK, map[string]interface{}{
+		"status":      "started",
+		"total_hours": body.TotalHours,
+		"platform":    body.Platform,
+		"topic":       body.Topic,
+	})
 }
 
 func handleStopSimulation(w http.ResponseWriter, req *http.Request) {
@@ -87,13 +97,9 @@ func handleGetSimulationStatus(w http.ResponseWriter, req *http.Request) {
 
 func handleGetSimulationActions(w http.ResponseWriter, req *http.Request) {
 	projectID := extractProjectID(req.URL.Path)
-	actions, err := agentsvc.GetRecentActions(projectID, 50)
-	if err != nil {
-		Err(w, http.StatusInternalServerError, err.Error())
-		return
-	}
+	actions, _ := agentsvc.GetRecentActions(projectID, 50)
 	if actions == nil {
-		actions = []agentsvc.Action{}
+		actions = []*agentsvc.AgentAction{}
 	}
 	JSON(w, http.StatusOK, actions)
 }
