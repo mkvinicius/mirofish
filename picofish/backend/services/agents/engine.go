@@ -255,8 +255,30 @@ func (m *Manager) Stop(projectID string) {
 
 func (m *Manager) GetState(projectID string) *SimState {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.states[projectID]
+	s := m.states[projectID]
+	m.mu.Unlock()
+	if s != nil {
+		return s
+	}
+	// After a server restart, rebuild state from the most recent sim_history entry.
+	history := GetSimHistory(projectID)
+	if len(history) == 0 {
+		return nil
+	}
+	h := history[0]
+	t, _ := time.Parse(time.RFC3339, h.StartedAt)
+	return &SimState{
+		ProjectID:   projectID,
+		SimID:       h.SimID,
+		Status:      h.Status,
+		TotalHours:  h.TotalHours,
+		CurrentHour: h.TotalHours,
+		AgentCount:  h.AgentCount,
+		ActionCount: h.ActionCount,
+		Platform:    h.Platform,
+		Topic:       h.Topic,
+		StartedAt:   t,
+	}
 }
 
 // ── Main simulation loop ───────────────────────────────────────────────────
