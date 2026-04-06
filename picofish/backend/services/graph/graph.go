@@ -140,38 +140,30 @@ Document:
 }
 
 func extractEntities(ctx context.Context, projectID, document string, ont *ontology) ([]Node, []Edge, error) {
-	// Step A: extract entities only (smaller response, no truncation)
-	entityPrompt := fmt.Sprintf(`Extract ALL distinct entities from this document.
+	// Step A: extract entities only — compact format to avoid truncation
+	entityPrompt := fmt.Sprintf(`Extract the key entities from this document.
 
-Entity types available: %s
+Entity types: %s
 
-Instructions:
-- Extract every distinct entity mentioned or implied.
-- For personas/roles, create individual entries for each distinct perspective.
-- Aim for 15-30 entities if the document supports it.
-- Include implicit stakeholders who would be affected.
-- Keep distinct roles separate — do not merge.
-
-Return ONLY valid JSON:
-{"entities": [{"type":"TypeName","name":"Entity Name","summary":"2-3 sentence description","attributes":{"key":"value"}}]}
+Return ONLY valid JSON with up to 20 entities, one-sentence summaries:
+{"entities": [{"type":"TypeName","name":"Entity Name","summary":"One sentence."}]}
 
 Document:
 %s`,
 		strings.Join(ont.EntityTypes, ", "),
-		trunc(document, 5000))
+		trunc(document, 4000))
 
 	respA, err := llm.Chat(ctx, []llm.Message{llm.User(entityPrompt)},
-		llm.WithTemperature(0.2), llm.WithMaxTokens(8000))
+		llm.WithTemperature(0.2), llm.WithMaxTokens(4000))
 	if err != nil {
 		return nil, nil, err
 	}
 
 	var rawEntities struct {
 		Entities []struct {
-			Type       string            `json:"type"`
-			Name       string            `json:"name"`
-			Summary    string            `json:"summary"`
-			Attributes map[string]string `json:"attributes"`
+			Type    string `json:"type"`
+			Name    string `json:"name"`
+			Summary string `json:"summary"`
 		} `json:"entities"`
 	}
 	if err := llm.ParseJSON(respA, &rawEntities); err != nil {
@@ -192,29 +184,28 @@ Document:
 			Name:      e.Name,
 			Labels:    []string{"Entity", e.Type},
 			Summary:   e.Summary,
-			Attrs:     e.Attributes,
 			CreatedAt: now,
 		})
 		entityNames = append(entityNames, e.Name)
 	}
 
-	// Step B: extract relationships between known entities (separate call)
-	relPrompt := fmt.Sprintf(`Given these entities from a document, extract the relationships between them.
+	// Step B: extract relationships (compact)
+	relPrompt := fmt.Sprintf(`Given these entities, extract key relationships between them.
 
 Entities: %s
-Relation types available: %s
+Relation types: %s
 
-Return ONLY valid JSON:
-{"relations": [{"source":"Entity A","target":"Entity B","relation":"RELATION_TYPE","fact":"Full sentence stating the relationship"}]}
+Return ONLY valid JSON (max 30 relations):
+{"relations": [{"source":"A","target":"B","relation":"TYPE","fact":"One sentence."}]}
 
 Document:
 %s`,
 		strings.Join(entityNames, ", "),
 		strings.Join(ont.RelationTypes, ", "),
-		trunc(document, 4000))
+		trunc(document, 3000))
 
 	respB, err := llm.Chat(ctx, []llm.Message{llm.User(relPrompt)},
-		llm.WithTemperature(0.2), llm.WithMaxTokens(6000))
+		llm.WithTemperature(0.2), llm.WithMaxTokens(3000))
 	if err != nil {
 		// Relations are optional — return nodes only if this fails
 		return nodes, nil, nil
