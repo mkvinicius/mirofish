@@ -128,7 +128,7 @@ Rules:
 Document:
 %s`, trunc(document, 3000))
 
-	resp, err := llm.Chat(ctx, []llm.Message{llm.User(prompt)}, llm.WithTemperature(0.2))
+	resp, err := llm.Chat(ctx, []llm.Message{llm.User(prompt)}, llm.WithTemperature(0.2), llm.WithMaxTokens(512))
 	if err != nil {
 		return nil, err
 	}
