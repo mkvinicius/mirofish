@@ -140,47 +140,87 @@ Document:
 }
 
 func extractEntities(ctx context.Context, projectID, document string, ont *ontology) ([]Node, []Edge, error) {
-	prompt := fmt.Sprintf(`Extract ALL entities and relationships from the document.
+	// Step A: extract entities only (smaller response, no truncation)
+	entityPrompt := fmt.Sprintf(`Extract ALL distinct entities from this document.
 
 Entity types available: %s
-Relation types available: %s
 
 Instructions:
-- Extract EVERY distinct entity mentioned or implied in the document.
-- For people/personas, create individual entries for each distinct role or perspective.
-- Aim for 20-40 entities minimum if the document supports it.
-- For each entity, also extract implicit stakeholders who would be affected.
-- Do not merge distinct roles or perspectives into one entity — keep them separate.
+- Extract every distinct entity mentioned or implied.
+- For personas/roles, create individual entries for each distinct perspective.
+- Aim for 15-30 entities if the document supports it.
+- Include implicit stakeholders who would be affected.
+- Keep distinct roles separate — do not merge.
 
 Return ONLY valid JSON:
-{
-  "entities": [
-    {"type":"TypeName","name":"Entity Name","summary":"2-3 sentence description","attributes":{"key":"value"}}
-  ],
-  "relations": [
-    {"source":"Entity A","target":"Entity B","relation":"RELATION_TYPE","fact":"Full sentence stating the relationship"}
-  ]
-}
+{"entities": [{"type":"TypeName","name":"Entity Name","summary":"2-3 sentence description","attributes":{"key":"value"}}]}
 
 Document:
 %s`,
 		strings.Join(ont.EntityTypes, ", "),
-		strings.Join(ont.RelationTypes, ", "),
 		trunc(document, 5000))
 
-	resp, err := llm.Chat(ctx, []llm.Message{llm.User(prompt)},
-		llm.WithTemperature(0.2), llm.WithMaxTokens(16000))
+	respA, err := llm.Chat(ctx, []llm.Message{llm.User(entityPrompt)},
+		llm.WithTemperature(0.2), llm.WithMaxTokens(8000))
 	if err != nil {
 		return nil, nil, err
 	}
 
-	var raw struct {
+	var rawEntities struct {
 		Entities []struct {
 			Type       string            `json:"type"`
 			Name       string            `json:"name"`
 			Summary    string            `json:"summary"`
 			Attributes map[string]string `json:"attributes"`
 		} `json:"entities"`
+	}
+	if err := llm.ParseJSON(respA, &rawEntities); err != nil {
+		return nil, nil, fmt.Errorf("parse entities: %w", err)
+	}
+
+	now := time.Now().Format(time.RFC3339)
+	var nodes []Node
+	var entityNames []string
+	for _, e := range rawEntities.Entities {
+		if e.Name == "" {
+			continue
+		}
+		nodes = append(nodes, Node{
+			ID:        uuid.NewString(),
+			ProjectID: projectID,
+			Type:      e.Type,
+			Name:      e.Name,
+			Labels:    []string{"Entity", e.Type},
+			Summary:   e.Summary,
+			Attrs:     e.Attributes,
+			CreatedAt: now,
+		})
+		entityNames = append(entityNames, e.Name)
+	}
+
+	// Step B: extract relationships between known entities (separate call)
+	relPrompt := fmt.Sprintf(`Given these entities from a document, extract the relationships between them.
+
+Entities: %s
+Relation types available: %s
+
+Return ONLY valid JSON:
+{"relations": [{"source":"Entity A","target":"Entity B","relation":"RELATION_TYPE","fact":"Full sentence stating the relationship"}]}
+
+Document:
+%s`,
+		strings.Join(entityNames, ", "),
+		strings.Join(ont.RelationTypes, ", "),
+		trunc(document, 4000))
+
+	respB, err := llm.Chat(ctx, []llm.Message{llm.User(relPrompt)},
+		llm.WithTemperature(0.2), llm.WithMaxTokens(6000))
+	if err != nil {
+		// Relations are optional — return nodes only if this fails
+		return nodes, nil, nil
+	}
+
+	var rawRelations struct {
 		Relations []struct {
 			Source   string `json:"source"`
 			Target   string `json:"target"`
@@ -188,32 +228,10 @@ Document:
 			Fact     string `json:"fact"`
 		} `json:"relations"`
 	}
-
-	if err := llm.ParseJSON(resp, &raw); err != nil {
-		return nil, nil, fmt.Errorf("parse entities: %w", err)
-	}
-
-	now := time.Now().Format(time.RFC3339)
-	var nodes []Node
-	for _, e := range raw.Entities {
-		if e.Name == "" {
-			continue
-		}
-		labels := []string{"Entity", e.Type}
-		nodes = append(nodes, Node{
-			ID:        uuid.NewString(),
-			ProjectID: projectID,
-			Type:      e.Type,
-			Name:      e.Name,
-			Labels:    labels,
-			Summary:   e.Summary,
-			Attrs:     e.Attributes,
-			CreatedAt: now,
-		})
-	}
+	_ = llm.ParseJSON(respB, &rawRelations) // best-effort
 
 	var edges []Edge
-	for _, r := range raw.Relations {
+	for _, r := range rawRelations.Relations {
 		fact := r.Fact
 		if fact == "" {
 			fact = fmt.Sprintf("%s %s %s", r.Source, strings.ToLower(r.Relation), r.Target)
