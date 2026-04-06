@@ -128,7 +128,11 @@ Rules:
 Document:
 %s`, trunc(document, 3000))
 
-	resp, err := llm.Chat(ctx, []llm.Message{llm.User(prompt)}, llm.WithTemperature(0.2), llm.WithMaxTokens(512))
+	msgs := []llm.Message{
+		llm.System("You are a JSON generator. Output ONLY raw valid JSON with no explanation, no markdown, no code fences."),
+		llm.User(prompt),
+	}
+	resp, err := llm.Chat(ctx, msgs, llm.WithTemperature(0.2), llm.WithMaxTokens(16000))
 	if err != nil {
 		return nil, err
 	}
@@ -153,8 +157,9 @@ Document:
 		strings.Join(ont.EntityTypes, ", "),
 		trunc(document, 4000))
 
-	respA, err := llm.Chat(ctx, []llm.Message{llm.User(entityPrompt)},
-		llm.WithTemperature(0.2), llm.WithMaxTokens(4000))
+	jsonSystem := llm.System("You are a JSON generator. Output ONLY raw valid JSON with no explanation, no markdown, no code fences.")
+	respA, err := llm.Chat(ctx, []llm.Message{jsonSystem, llm.User(entityPrompt)},
+		llm.WithTemperature(0.2), llm.WithMaxTokens(16000))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -204,8 +209,8 @@ Document:
 		strings.Join(ont.RelationTypes, ", "),
 		trunc(document, 3000))
 
-	respB, err := llm.Chat(ctx, []llm.Message{llm.User(relPrompt)},
-		llm.WithTemperature(0.2), llm.WithMaxTokens(3000))
+	respB, err := llm.Chat(ctx, []llm.Message{jsonSystem, llm.User(relPrompt)},
+		llm.WithTemperature(0.2), llm.WithMaxTokens(16000))
 	if err != nil {
 		// Relations are optional — return nodes only if this fails
 		return nodes, nil, nil
