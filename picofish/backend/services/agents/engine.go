@@ -586,7 +586,7 @@ func (m *Manager) agentAct(ctx context.Context, agent *OasisAgentProfile,
 
 	// Determine platform behavior description
 	platformDescMap := map[string]string{
-		"twitter":   "microblogging platform, real-time news, trending topics, public discourse",
+		"twitter":   "X (formerly Twitter) — microblogging platform rebranded in 2023, real-time news, trending topics, public discourse, now owned by Elon Musk",
 		"reddit":    "community forums, upvote-driven discussions, niche subreddits, long-form debate",
 		"instagram": "visual-first platform, food content thrives, influencer culture, hashtags",
 		"tiktok":    "short video platform, trends spread fast, Brazilian expat communities active",

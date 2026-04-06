@@ -77,7 +77,7 @@
 
   function platformIcon(p) {
     const icons = {
-      twitter: '🐦', reddit: '🤖', instagram: '📸',
+      twitter: '𝕏', reddit: '🤖', instagram: '📸',
       tiktok: '🎵', whatsapp: '💬', facebook: '👥'
     }
     return icons[p] || '🌐'
@@ -233,9 +233,9 @@
   <div class="field narrow">
     <label>Plataforma</label>
     <select bind:value={platform}>
-      <option value="both">Twitter + Reddit</option>
+      <option value="both">X (Twitter) + Reddit</option>
       <option value="all">Todas as plataformas</option>
-      <option value="twitter">Twitter</option>
+      <option value="twitter">X (Twitter)</option>
       <option value="reddit">Reddit</option>
       <option value="instagram">Instagram</option>
       <option value="tiktok">TikTok</option>
