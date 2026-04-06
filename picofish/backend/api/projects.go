@@ -69,7 +69,7 @@ func projectsSubrouter(w http.ResponseWriter, req *http.Request) {
 }
 
 // Path matchers
-func isProjectDelete(p string) bool { return countParts(p, "/api/v1/projects/") == 1 }
+func isProjectDelete(p string) bool { return countParts(p, "/api/v1/projects/") == 0 }
 func isGraphBuild(p string) bool    { return endsWith(p, "/graph") }
 func isGraphNodes(p string) bool    { return endsWith(p, "/graph/nodes") }
 func isGraphSearch(p string) bool   { return endsWith(p, "/graph/search") }
