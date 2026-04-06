@@ -76,7 +76,11 @@
   }
 
   function platformIcon(p) {
-    return p === 'twitter' ? '🐦' : p === 'reddit' ? '🤖' : '🌐'
+    const icons = {
+      twitter: '🐦', reddit: '🤖', instagram: '📸',
+      tiktok: '🎵', whatsapp: '💬', facebook: '👥'
+    }
+    return icons[p] || '🌐'
   }
 
   function progressPct(s) {
@@ -229,9 +233,14 @@
   <div class="field narrow">
     <label>Plataforma</label>
     <select bind:value={platform}>
-      <option value="both">Ambas</option>
+      <option value="both">Twitter + Reddit</option>
+      <option value="all">Todas as plataformas</option>
       <option value="twitter">Twitter</option>
       <option value="reddit">Reddit</option>
+      <option value="instagram">Instagram</option>
+      <option value="tiktok">TikTok</option>
+      <option value="whatsapp">WhatsApp</option>
+      <option value="facebook">Facebook</option>
     </select>
   </div>
   {#if status?.status !== 'running'}

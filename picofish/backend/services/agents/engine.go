@@ -37,6 +37,31 @@ const (
 	ActionComment     = "COMMENT"
 	ActionShare       = "SHARE"
 	ActionCollect     = "COLLECT"
+
+	// Instagram actions
+	ActionStory       = "STORY"
+	ActionReel        = "REEL"
+
+	// TikTok actions
+	ActionCreateVideo = "CREATE_VIDEO"
+	ActionDuet        = "DUET"
+	ActionStitch      = "STITCH"
+
+	// WhatsApp actions
+	ActionSendMessage = "SEND_MESSAGE"
+	ActionForward     = "FORWARD"
+	ActionReact       = "REACT"
+
+	// Facebook actions
+	ActionJoinGroup   = "JOIN_GROUP"
+
+	// Platform constants
+	PlatformTwitter   = "twitter"
+	PlatformReddit    = "reddit"
+	PlatformInstagram = "instagram"
+	PlatformTikTok    = "tiktok"
+	PlatformWhatsApp  = "whatsapp"
+	PlatformFacebook  = "facebook"
 )
 
 // ── World state ────────────────────────────────────────────────────────────
@@ -137,7 +162,7 @@ func (w *World) getFeed(agentID, platform string, size int, agent *OasisAgentPro
 
 	var candidates []*Post
 	for _, p := range w.posts {
-		if p.Platform != platform && platform != "both" {
+		if p.Platform != platform && platform != "both" && platform != "all" {
 			continue
 		}
 		candidates = append(candidates, p)
@@ -340,12 +365,17 @@ func (m *Manager) runLoop(ctx context.Context, projectID, simID string,
 		}
 
 		activePlatform := platform
-		if platform == "both" {
+		switch platform {
+		case "both":
 			if simHour >= 19 {
 				activePlatform = "twitter"
 			} else {
 				activePlatform = "reddit"
 			}
+		case "all":
+			// Rotate through all 6 platforms based on hour
+			allPlatforms := []string{"twitter", "reddit", "instagram", "tiktok", "whatsapp", "facebook"}
+			activePlatform = allPlatforms[simHour%len(allPlatforms)]
 		}
 
 		sem := make(chan struct{}, 3)
@@ -554,11 +584,26 @@ func (m *Manager) agentAct(ctx context.Context, agent *OasisAgentProfile,
 		}
 	}
 
+	// Determine platform behavior description
+	platformDescMap := map[string]string{
+		"twitter":   "microblogging platform, real-time news, trending topics, public discourse",
+		"reddit":    "community forums, upvote-driven discussions, niche subreddits, long-form debate",
+		"instagram": "visual-first platform, food content thrives, influencer culture, hashtags",
+		"tiktok":    "short video platform, trends spread fast, Brazilian expat communities active",
+		"whatsapp":  "private group messaging, Brazilian community groups, word-of-mouth",
+		"facebook":  "community groups, Brazilian expats in Vancouver, event sharing",
+	}
+	platformDesc := platformDescMap[platform]
+	if platformDesc == "" {
+		platformDesc = "social media platform"
+	}
+
 	// ── Step 1: Internal monologue (chain-of-thought) ──────────────────────
 	thinkPrompt := fmt.Sprintf(`You are %s (@%s), %s, %s.
 Bio: %s
 MBTI: %s | Stance: %s | Sentiment: %s
 
+Platform: %s (%s)
 Simulation topic: %s | Time: %02d:00
 
 Your relevant memories:
@@ -575,6 +620,7 @@ Think deeply as this person. Write 2-3 sentences of internal thought:
 Respond with ONLY your internal thoughts, in first person, no JSON.`,
 		agent.Name, agent.UserName, agent.Profession, agent.Country,
 		agent.Bio, agent.MBTI, agent.Stance, sentimentLabel(agent.SentimentBias),
+		platform, platformDesc,
 		topic, simHour, memCtx, feedText)
 
 	thoughts, err := llm.Chat(ctx, []llm.Message{llm.User(thinkPrompt)},
@@ -587,10 +633,21 @@ Respond with ONLY your internal thoughts, in first person, no JSON.`,
 
 	// Determine available actions based on platform
 	var actionList string
-	if platform == "twitter" {
+	switch platform {
+	case "twitter":
 		actionList = "CREATE_POST, LIKE_POST, REPOST, REPLY_TO_POST, FOLLOW, DO_NOTHING"
-	} else {
+	case "reddit":
 		actionList = "CREATE_POST, UPVOTE, DOWNVOTE, COMMENT, SHARE, DO_NOTHING"
+	case "instagram":
+		actionList = "CREATE_POST, STORY, REEL, LIKE, COMMENT, SHARE, FOLLOW, DO_NOTHING"
+	case "tiktok":
+		actionList = "CREATE_VIDEO, DUET, STITCH, LIKE, COMMENT, SHARE, FOLLOW, DO_NOTHING"
+	case "whatsapp":
+		actionList = "SEND_MESSAGE, FORWARD, REACT, DO_NOTHING"
+	case "facebook":
+		actionList = "CREATE_POST, COMMENT, LIKE, SHARE, JOIN_GROUP, DO_NOTHING"
+	default:
+		actionList = "CREATE_POST, LIKE_POST, REPLY_TO_POST, SHARE, DO_NOTHING"
 	}
 
 	stanceMap := map[string]string{
@@ -615,7 +672,7 @@ Respond with ONLY your internal thoughts, in first person, no JSON.`,
 		thoughtsSection = fmt.Sprintf("\nYour internal thoughts right now:\n%s\n", thoughts)
 	}
 
-	prompt := fmt.Sprintf(`You are %s (@%s), a %d-year-old %s on %s.
+	prompt := fmt.Sprintf(`You are %s (@%s), a %d-year-old %s on %s (%s).
 Bio: %s
 Persona: %s
 Your stance: %s
@@ -649,7 +706,7 @@ Rules:
 - If DO_NOTHING, content can be empty
 - Your stance should influence your content direction
 - stance_shift: float between -0.3 and 0.3 (how much this interaction shifts your sentiment; 0 = no change)`,
-		agent.Name, agent.UserName, agent.Age, agent.Profession, platform,
+		agent.Name, agent.UserName, agent.Age, agent.Profession, platform, platformDesc,
 		agent.Bio, trunc(agent.Persona, 200),
 		stanceDesc,
 		sentimentLabel(agent.SentimentBias),
@@ -878,17 +935,33 @@ func (m *Manager) incrementActions(projectID string) {
 func normalizeAction(action, platform string) string {
 	action = strings.ToUpper(strings.TrimSpace(action))
 	valid := map[string]bool{
+		// Twitter
 		ActionCreatePost: true,
 		ActionLikePost:   true,
 		ActionRepost:     true,
 		ActionReplyPost:  true,
 		ActionFollow:     true,
 		ActionDoNothing:  true,
+		// Reddit
 		ActionUpvote:     true,
 		ActionDownvote:   true,
 		ActionComment:    true,
 		ActionShare:      true,
 		ActionCollect:    true,
+		// Instagram
+		ActionStory:       true,
+		ActionReel:        true,
+		"LIKE":            true,
+		// TikTok
+		ActionCreateVideo: true,
+		ActionDuet:        true,
+		ActionStitch:      true,
+		// WhatsApp
+		ActionSendMessage: true,
+		ActionForward:     true,
+		ActionReact:       true,
+		// Facebook
+		ActionJoinGroup:   true,
 	}
 	if valid[action] {
 		return action
