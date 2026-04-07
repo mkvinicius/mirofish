@@ -6,11 +6,15 @@
   import Step3Simulation from './steps/Step3Simulation.svelte'
   import Step4Report from './steps/Step4Report.svelte'
   import Step5Chat from './steps/Step5Chat.svelte'
+  import ScenarioComparison from './ScenarioComparison.svelte'
+  import { simRequirement } from './stores/project.js'
 
+  // Steps: 3.5 is the optional scenario comparison step (between Simulation and Report)
   const steps = [
     { n: 1, label: 'Graph' },
     { n: 2, label: 'Agents' },
     { n: 3, label: 'Simulation' },
+    { n: 3.5, label: 'Scenarios', optional: true },
     { n: 4, label: 'Report' },
     { n: 5, label: 'Interact' }
   ]
@@ -83,6 +87,8 @@
   }
   .step.active .step-num { background: #38bdf8; color: #0f172a; border-color: #38bdf8; }
   .step.done .step-num { background: #22c55e; color: #0f172a; border-color: #22c55e; }
+  .step.optional { font-style: italic; opacity: 0.75; }
+  .step.optional:hover { opacity: 1; }
 
   .step-connector {
     flex: 0 0 20px;
@@ -112,10 +118,10 @@
     {#each steps as s, i}
       {#if i > 0}<div class="step-connector"></div>{/if}
       <div
-        class="step {$currentStep === s.n ? 'active' : ''} {$currentStep > s.n ? 'done' : ''}"
+        class="step {$currentStep === s.n ? 'active' : ''} {$currentStep > s.n ? 'done' : ''} {s.optional ? 'optional' : ''}"
         on:click={() => $currentStep = s.n}
       >
-        <span class="step-num">{$currentStep > s.n ? '✓' : s.n}</span>
+        <span class="step-num">{$currentStep > s.n ? '✓' : (s.optional ? '~' : s.n)}</span>
         {s.label}
       </div>
     {/each}
@@ -125,6 +131,8 @@
     {#if $currentStep === 1}<Step1Graph />
     {:else if $currentStep === 2}<Step2Agents />
     {:else if $currentStep === 3}<Step3Simulation />
+    {:else if $currentStep === 3.5}
+      <ScenarioComparison projectId={$currentProject.id} baseTopic={$simRequirement} />
     {:else if $currentStep === 4}<Step4Report />
     {:else if $currentStep === 5}<Step5Chat />
     {/if}

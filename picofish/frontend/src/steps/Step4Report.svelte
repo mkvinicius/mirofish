@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from 'svelte'
   import { api } from '../lib/api.js'
   import { currentProject, currentStep, simRequirement } from '../stores/project.js'
+  import PredictionTracker from '../PredictionTracker.svelte'
 
   let status = null
   let error = ''
@@ -216,6 +217,12 @@
     <button class="export" on:click={exportReport}>↓ Exportar .md</button>
   </div>
   <div class="report-body">{@html renderMarkdown(status.content)}</div>
+
+  <!-- Phase 2: Prediction Tracker -->
+  <div class="prediction-section">
+    <PredictionTracker projectId={$currentProject.id} />
+  </div>
+
   <div class="next-btn">
     <button on:click={() => $currentStep = 5}>Próximo: Interação Profunda →</button>
   </div>
@@ -232,3 +239,11 @@
   <input bind:value={scenarioInput} placeholder="Descreva o cenário..." />
   <button on:click={generate}>Gerar Relatório</button>
 {/if}
+
+<style>
+  .prediction-section {
+    margin-top: 2rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid #334155;
+  }
+</style>

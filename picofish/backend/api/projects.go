@@ -28,6 +28,16 @@ func projectsSubrouter(w http.ResponseWriter, req *http.Request) {
 	// /api/v1/projects/{id}/simulation/*  GET/POST
 	// /api/v1/projects/{id}/report/*  GET/POST
 	// /api/v1/projects/{id}/chat  POST
+	// Phase 2:
+	// /api/v1/projects/{id}/network  GET
+	// /api/v1/projects/{id}/scenarios/compare  POST
+	// /api/v1/projects/{id}/simulation/inject  POST
+	// /api/v1/projects/{id}/simulation/replay  GET
+	// /api/v1/projects/{id}/simulation/replay/export  GET
+	// /api/v1/projects/{id}/simulation/replay/:hour  GET
+	// /api/v1/projects/{id}/report/predictions  GET
+	// /api/v1/projects/{id}/report/predictions/extract  POST
+	// /api/v1/projects/{id}/report/predictions/:id/outcome  POST
 	path := req.URL.Path
 
 	switch {
@@ -49,6 +59,16 @@ func projectsSubrouter(w http.ResponseWriter, req *http.Request) {
 		handleGetSimulationStatus(w, req)
 	case isSimActions(path) && req.Method == http.MethodGet:
 		handleGetSimulationActions(w, req)
+	// Phase 2: inject, replay
+	case isSimInject(path) && req.Method == http.MethodPost:
+		handleInjectEvent(w, req)
+	case isReplayExport(path) && req.Method == http.MethodGet:
+		handleExportReplay(w, req)
+	case isReplayFrame(path) && req.Method == http.MethodGet:
+		handleGetReplayFrame(w, req)
+	case isReplay(path) && req.Method == http.MethodGet:
+		handleGetReplay(w, req)
+	// Report handlers
 	case isReportGenerate(path) && req.Method == http.MethodPost:
 		handleGenerateReport(w, req)
 	case isReportStream(path) && req.Method == http.MethodGet:
@@ -57,10 +77,22 @@ func projectsSubrouter(w http.ResponseWriter, req *http.Request) {
 		handleExportReport(w, req)
 	case isSimHistory(path) && req.Method == http.MethodGet:
 		handleSimHistory(w, req)
+	// Phase 2: predictions
+	case isPredictionExtract(path) && req.Method == http.MethodPost:
+		handleExtractPredictions(w, req)
+	case isPredictionOutcome(path) && req.Method == http.MethodPost:
+		handleMarkPredictionOutcome(w, req)
+	case isPredictions(path) && req.Method == http.MethodGet:
+		handleGetPredictions(w, req)
 	case isReport(path) && req.Method == http.MethodGet:
 		handleGetReport(w, req)
 	case isChat(path) && req.Method == http.MethodPost:
 		handleChat(w, req)
+	// Phase 2: network, scenarios
+	case isNetwork(path) && req.Method == http.MethodGet:
+		handleGetNetwork(w, req)
+	case isScenarios(path) && req.Method == http.MethodPost:
+		handleCompareScenarios(w, req)
 	case isProjectDelete(path) && req.Method == http.MethodDelete:
 		handleDeleteProject(w, req)
 	default:
@@ -69,20 +101,20 @@ func projectsSubrouter(w http.ResponseWriter, req *http.Request) {
 }
 
 // Path matchers
-func isProjectDelete(p string) bool { return countParts(p, "/api/v1/projects/") == 0 }
-func isGraphBuild(p string) bool    { return endsWith(p, "/graph") }
-func isGraphNodes(p string) bool    { return endsWith(p, "/graph/nodes") }
-func isGraphSearch(p string) bool   { return endsWith(p, "/graph/search") }
+func isProjectDelete(p string) bool  { return countParts(p, "/api/v1/projects/") == 0 }
+func isGraphBuild(p string) bool     { return endsWith(p, "/graph") }
+func isGraphNodes(p string) bool     { return endsWith(p, "/graph/nodes") }
+func isGraphSearch(p string) bool    { return endsWith(p, "/graph/search") }
 func isAgentsGenerate(p string) bool { return endsWith(p, "/agents/generate") }
-func isAgentsList(p string) bool    { return endsWith(p, "/agents") }
-func isSimStart(p string) bool      { return endsWith(p, "/simulation/start") }
-func isSimStop(p string) bool       { return endsWith(p, "/simulation/stop") }
-func isSimStatus(p string) bool     { return endsWith(p, "/simulation/status") }
-func isSimActions(p string) bool    { return endsWith(p, "/simulation/actions") }
+func isAgentsList(p string) bool     { return endsWith(p, "/agents") }
+func isSimStart(p string) bool       { return endsWith(p, "/simulation/start") }
+func isSimStop(p string) bool        { return endsWith(p, "/simulation/stop") }
+func isSimStatus(p string) bool      { return endsWith(p, "/simulation/status") }
+func isSimActions(p string) bool     { return endsWith(p, "/simulation/actions") }
 func isReportGenerate(p string) bool { return endsWith(p, "/report/generate") }
-func isReportStream(p string) bool  { return endsWith(p, "/report/stream") }
-func isReportExport(p string) bool  { return endsWith(p, "/report/export") }
-func isSimHistory(p string) bool    { return endsWith(p, "/simulation/history") }
+func isReportStream(p string) bool   { return endsWith(p, "/report/stream") }
+func isReportExport(p string) bool   { return endsWith(p, "/report/export") }
+func isSimHistory(p string) bool     { return endsWith(p, "/simulation/history") }
 func isReport(p string) bool {
 	return endsWith(p, "/report") &&
 		!endsWith(p, "/report/generate") &&
@@ -90,6 +122,32 @@ func isReport(p string) bool {
 		!endsWith(p, "/report/export")
 }
 func isChat(p string) bool { return endsWith(p, "/chat") }
+
+// Phase 2 path matchers
+func isSimInject(p string) bool       { return endsWith(p, "/simulation/inject") }
+func isReplay(p string) bool          { return endsWith(p, "/simulation/replay") }
+func isReplayExport(p string) bool    { return endsWith(p, "/simulation/replay/export") }
+func isReplayFrame(p string) bool {
+	// matches /simulation/replay/{n} where n is a number
+	return containsStr(p, "/simulation/replay/") && !endsWith(p, "/simulation/replay/export")
+}
+func isNetwork(p string) bool    { return endsWith(p, "/network") }
+func isScenarios(p string) bool  { return endsWith(p, "/scenarios/compare") }
+func isPredictions(p string) bool {
+	return endsWith(p, "/report/predictions") &&
+		!endsWith(p, "/report/predictions/extract")
+}
+func isPredictionExtract(p string) bool { return endsWith(p, "/report/predictions/extract") }
+func isPredictionOutcome(p string) bool { return endsWith(p, "/outcome") && containsStr(p, "/predictions/") }
+
+func containsStr(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
 
 func endsWith(path, suffix string) bool {
 	return len(path) >= len(suffix) && path[len(path)-len(suffix):] == suffix
@@ -167,7 +225,7 @@ func handleListProjects(w http.ResponseWriter, req *http.Request) {
 
 func handleDeleteProject(w http.ResponseWriter, req *http.Request) {
 	id := extractProjectID(req.URL.Path)
-	for _, col := range []string{"graph_nodes", "graph_edges", "agents", "simulation_actions", "reports", "agent_memories", "sim_history"} {
+	for _, col := range []string{"graph_nodes", "graph_edges", "agents", "simulation_actions", "reports", "agent_memories", "sim_history", "replay_frames", "predictions"} {
 		_ = storage.DB.DeleteWhere(col, func(r storage.Record) bool {
 			return storage.GetStr(r, "project_id") == id
 		})

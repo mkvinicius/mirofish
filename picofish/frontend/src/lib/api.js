@@ -47,5 +47,27 @@ export const api = {
 
   // Chat (Step 5)
   chat: (id, sim_requirement, message, history) =>
-    request('POST', `/projects/${id}/chat`, { sim_requirement, message, history })
+    request('POST', `/projects/${id}/chat`, { sim_requirement, message, history }),
+
+  // Phase 2: Influence Network
+  getNetwork: (id) => request('GET', `/projects/${id}/network`),
+
+  // Phase 2: Scenario Comparison
+  compareScenarios: (id, base_topic, scenarios) =>
+    request('POST', `/projects/${id}/scenarios/compare`, { base_topic, scenarios }),
+
+  // Phase 2: Injection
+  injectEvent: (id, event) =>
+    request('POST', `/projects/${id}/simulation/inject`, event),
+
+  // Phase 2: Replay
+  getReplay: (id) => request('GET', `/projects/${id}/simulation/replay`),
+  getReplayFrame: (id, hour) => request('GET', `/projects/${id}/simulation/replay/${hour}`),
+  replayExportUrl: (id, format) => `${BASE}/projects/${id}/simulation/replay/export?format=${format || 'json'}`,
+
+  // Phase 2: Predictions
+  getPredictions: (id) => request('GET', `/projects/${id}/report/predictions`),
+  extractPredictions: (id) => request('POST', `/projects/${id}/report/predictions/extract`),
+  markPredictionOutcome: (id, predId, correct) =>
+    request('POST', `/projects/${id}/report/predictions/${predId}/outcome`, { correct })
 }

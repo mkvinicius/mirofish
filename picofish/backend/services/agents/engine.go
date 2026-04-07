@@ -67,19 +67,21 @@ const (
 // ── World state ────────────────────────────────────────────────────────────
 
 type Post struct {
-	ID          string  `json:"id"`
-	Platform    string  `json:"platform"`
-	AuthorID    string  `json:"author_id"`
-	AuthorName  string  `json:"author_name"`
-	Content     string  `json:"content"`
-	LikeCount   int     `json:"like_count"`
-	RepostCount int     `json:"repost_count"`
-	CommentCount int    `json:"comment_count"`
-	ParentID    string  `json:"parent_id"`
-	Round       int     `json:"round"`
-	SimHour     int     `json:"sim_hour"`
-	CreatedAt   string  `json:"created_at"`
-	Score       float64 `json:"-"` // feed ranking score
+	ID           string   `json:"id"`
+	Platform     string   `json:"platform"`
+	AuthorID     string   `json:"author_id"`
+	AuthorName   string   `json:"author_name"`
+	Content      string   `json:"content"`
+	LikeCount    int      `json:"like_count"`
+	RepostCount  int      `json:"repost_count"`
+	CommentCount int      `json:"comment_count"`
+	ParentID     string   `json:"parent_id"`
+	Round        int      `json:"round"`
+	SimHour      int      `json:"sim_hour"`
+	CreatedAt    string   `json:"created_at"`
+	Visibility   string   `json:"visibility,omitempty"`    // "public"|"targeted"|"rumor"
+	TargetAgents []string `json:"target_agents,omitempty"` // for targeted/rumor posts
+	Score        float64  `json:"-"`                       // feed ranking score
 }
 
 type AgentAction struct {
@@ -98,6 +100,55 @@ type AgentAction struct {
 	Timestamp    string `json:"timestamp"`
 	ReplyTo      string `json:"reply_to,omitempty"`      // @username being replied to
 	ReplyContent string `json:"reply_content,omitempty"` // content of post being replied to
+}
+
+// InjectionEvent represents a mid-simulation content injection (breaking news, narrative shift).
+type InjectionEvent struct {
+	Hour         int      `json:"hour"`                    // simulated hour (0-23) to inject
+	Content      string   `json:"content"`                 // post content
+	TargetAgents []string `json:"target_agents,omitempty"` // empty = broadcast to all
+	Visibility   string   `json:"visibility"`              // "public"|"targeted"|"rumor"
+	AgentName    string   `json:"agent_name,omitempty"`    // author display name, defaults to "NewsBot"
+}
+
+// InfluenceEdge represents a weighted influence relationship between two agents.
+type InfluenceEdge struct {
+	FromAgentID string  `json:"from_agent_id"`
+	ToAgentID   string  `json:"to_agent_id"`
+	ActionType  string  `json:"action_type"`
+	Hour        int     `json:"sim_hour"`
+	Weight      float64 `json:"weight"`
+}
+
+// PostSummary is a lightweight post record for replay frames.
+type PostSummary struct {
+	AuthorName string `json:"author_name"`
+	Content    string `json:"content"`
+	Platform   string `json:"platform"`
+	SimHour    int    `json:"sim_hour"`
+	LikeCount  int    `json:"like_count"`
+}
+
+// AgentSnapshot captures an agent's state at a specific simulation hour.
+type AgentSnapshot struct {
+	AgentID       string  `json:"agent_id"`
+	AgentName     string  `json:"agent_name"`
+	SentimentBias float64 `json:"sentiment_bias"`
+	ActionCount   int     `json:"action_count"`
+	Stance        string  `json:"stance"`
+}
+
+// ReplayFrame records the full world state at one simulation hour.
+type ReplayFrame struct {
+	ProjectID   string          `json:"project_id"`
+	SimID       string          `json:"simulation_id"`
+	Hour        int             `json:"hour"`         // wall-clock iteration
+	SimHour     int             `json:"sim_hour"`     // 0-23
+	AgentCount  int             `json:"agent_count"`
+	ActionCount int             `json:"action_count"`
+	Posts       []PostSummary   `json:"posts"`
+	Agents      []AgentSnapshot `json:"agents"`
+	Timestamp   string          `json:"timestamp"`
 }
 
 // AgentMemory stores an agent's recent experiences for context.
@@ -179,6 +230,27 @@ func (w *World) getFeed(agentID, platform string, size int, agent *OasisAgentPro
 		if p.Platform != platform && platform != "both" && platform != "all" {
 			continue
 		}
+		// Visibility filtering for injected/targeted posts
+		switch p.Visibility {
+		case "targeted":
+			if len(p.TargetAgents) > 0 {
+				show := false
+				for _, ta := range p.TargetAgents {
+					if ta == agentID {
+						show = true
+						break
+					}
+				}
+				if !show {
+					continue
+				}
+			}
+		case "rumor":
+			// Rumor posts appear in feeds with 30% probability
+			if rand.Float64() > 0.30 {
+				continue
+			}
+		}
 		candidates = append(candidates, p)
 	}
 
@@ -253,14 +325,18 @@ type SimState struct {
 // ── Manager ────────────────────────────────────────────────────────────────
 
 type Manager struct {
-	mu     sync.Mutex
-	states map[string]*SimState
-	cancel map[string]context.CancelFunc
+	mu            sync.Mutex
+	states        map[string]*SimState
+	cancel        map[string]context.CancelFunc
+	injections    map[string][]InjectionEvent  // projectID → pending injections
+	influenceNets map[string][]*InfluenceEdge  // projectID → accumulated edges
 }
 
 var Global = &Manager{
-	states: make(map[string]*SimState),
-	cancel: make(map[string]context.CancelFunc),
+	states:        make(map[string]*SimState),
+	cancel:        make(map[string]context.CancelFunc),
+	injections:    make(map[string][]InjectionEvent),
+	influenceNets: make(map[string][]*InfluenceEdge),
 }
 
 // Start launches the simulation for a project.
@@ -313,6 +389,26 @@ func (m *Manager) Stop(projectID string) {
 	if cancel, ok := m.cancel[projectID]; ok {
 		cancel()
 	}
+}
+
+// Inject queues a mid-simulation event to be processed at the specified hour.
+func (m *Manager) Inject(projectID string, event InjectionEvent) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.injections == nil {
+		m.injections = make(map[string][]InjectionEvent)
+	}
+	m.injections[projectID] = append(m.injections[projectID], event)
+}
+
+// GetInfluenceNetwork returns a copy of all influence edges recorded for a project.
+func (m *Manager) GetInfluenceNetwork(projectID string) []*InfluenceEdge {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	edges := m.influenceNets[projectID]
+	result := make([]*InfluenceEdge, len(edges))
+	copy(result, edges)
+	return result
 }
 
 func (m *Manager) GetState(projectID string) *SimState {
@@ -437,6 +533,11 @@ func (m *Manager) runLoop(ctx context.Context, projectID, simID string,
 			activePlatform = allPlatforms[simHour%len(allPlatforms)]
 		}
 
+		// Process injections scheduled for this simulated hour (before agents act)
+		m.processHourInjections(ctx, projectID, simID, world, simHour)
+
+		var hourActions []*AgentAction
+		var hourActionsMu sync.Mutex
 		sem := make(chan struct{}, 3)
 		var wg sync.WaitGroup
 		for _, agent := range active {
@@ -453,9 +554,18 @@ func (m *Manager) runLoop(ctx context.Context, projectID, simID string,
 				}
 				saveSimAction(action)
 				m.incrementActions(projectID)
+				hourActionsMu.Lock()
+				hourActions = append(hourActions, action)
+				hourActionsMu.Unlock()
 			}(agent)
 		}
 		wg.Wait()
+
+		// Record influence edges from actions this hour
+		m.recordInfluence(projectID, hourActions, simHour, world)
+
+		// Save replay frame for this hour
+		m.saveReplayFrame(projectID, simID, hour, simHour, hourActions, profiles, world)
 
 		// Viral cascade: check for trending posts and shift agent sentiments
 		applyViralCascade(world, profiles, simHour)
@@ -1148,4 +1258,185 @@ func GetSimHistory(projectID string) []SimHistoryEntry {
 		}
 	}
 	return entries
+}
+
+// ── Phase 2: Injection, Influence, Replay ─────────────────────────────────
+
+// processHourInjections consumes any injections scheduled for the current simHour.
+func (m *Manager) processHourInjections(ctx context.Context, projectID, simID string, world *World, simHour int) {
+	m.mu.Lock()
+	var pending, remaining []InjectionEvent
+	for _, inj := range m.injections[projectID] {
+		if inj.Hour == simHour {
+			pending = append(pending, inj)
+		} else {
+			remaining = append(remaining, inj)
+		}
+	}
+	m.injections[projectID] = remaining
+	m.mu.Unlock()
+
+	for _, inj := range pending {
+		m.applyInjection(ctx, projectID, simID, world, inj, simHour)
+	}
+}
+
+// applyInjection creates a synthetic post from an injection event.
+func (m *Manager) applyInjection(_ context.Context, projectID, simID string, world *World, inj InjectionEvent, simHour int) {
+	authorName := inj.AgentName
+	if authorName == "" {
+		authorName = "NewsBot"
+	}
+	visibility := inj.Visibility
+	if visibility == "" {
+		visibility = "public"
+	}
+	post := &Post{
+		ID:           uuid.NewString(),
+		Platform:     "twitter",
+		AuthorID:     "injection-" + projectID,
+		AuthorName:   authorName,
+		Content:      inj.Content,
+		SimHour:      simHour,
+		Round:        simHour,
+		CreatedAt:    time.Now().Format(time.RFC3339),
+		Visibility:   visibility,
+		TargetAgents: inj.TargetAgents,
+	}
+	world.addPost(post)
+
+	action := &AgentAction{
+		ID:         uuid.NewString(),
+		ProjectID:  projectID,
+		SimID:      simID,
+		AgentID:    "injection-" + projectID,
+		AgentName:  authorName,
+		Platform:   "twitter",
+		ActionType: ActionCreatePost,
+		Content:    inj.Content,
+		Round:      simHour,
+		SimHour:    simHour,
+		TargetID:   post.ID,
+		Success:    true,
+		Timestamp:  time.Now().Format(time.RFC3339),
+	}
+	saveSimAction(action)
+}
+
+// influenceWeight returns the social influence weight for an action type.
+func influenceWeight(actionType string) float64 {
+	switch actionType {
+	case ActionFollow:
+		return 0.5
+	case ActionRepost, ActionShare, ActionForward:
+		return 0.4
+	case ActionReplyPost, ActionComment:
+		return 0.3
+	case ActionUpvote:
+		return 0.2
+	case ActionLikePost, ActionReact:
+		return 0.1
+	default:
+		return 0.0
+	}
+}
+
+// recordInfluence records InfluenceEdge entries for all actions in an hour.
+// Resolves post authors via world.posts to get real agent-to-agent relationships.
+func (m *Manager) recordInfluence(projectID string, actions []*AgentAction, simHour int, world *World) {
+	if len(actions) == 0 {
+		return
+	}
+	world.mu.RLock()
+	postAuthors := make(map[string]string, len(world.posts))
+	for id, p := range world.posts {
+		postAuthors[id] = p.AuthorID
+	}
+	world.mu.RUnlock()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.influenceNets == nil {
+		m.influenceNets = make(map[string][]*InfluenceEdge)
+	}
+	for _, a := range actions {
+		w := influenceWeight(a.ActionType)
+		if w == 0 {
+			continue
+		}
+		toAgentID := postAuthors[a.TargetID]
+		if toAgentID == "" || toAgentID == a.AgentID {
+			continue
+		}
+		m.influenceNets[projectID] = append(m.influenceNets[projectID], &InfluenceEdge{
+			FromAgentID: a.AgentID,
+			ToAgentID:   toAgentID,
+			ActionType:  a.ActionType,
+			Hour:        simHour,
+			Weight:      w,
+		})
+	}
+}
+
+// saveReplayFrame persists a snapshot of the world state for one simulation hour.
+func (m *Manager) saveReplayFrame(projectID, simID string, hour, simHour int,
+	actions []*AgentAction, profiles []*OasisAgentProfile, world *World) {
+
+	world.mu.RLock()
+	var posts []PostSummary
+	for _, p := range world.posts {
+		posts = append(posts, PostSummary{
+			AuthorName: p.AuthorName,
+			Content:    trunc(p.Content, 150),
+			Platform:   p.Platform,
+			SimHour:    p.SimHour,
+			LikeCount:  p.LikeCount,
+		})
+	}
+	world.mu.RUnlock()
+
+	// Most recent posts first, cap at 20
+	sort.Slice(posts, func(i, j int) bool { return posts[i].SimHour > posts[j].SimHour })
+	if len(posts) > 20 {
+		posts = posts[:20]
+	}
+
+	// Count actions per agent this hour
+	agentActionCounts := make(map[string]int, len(profiles))
+	for _, a := range actions {
+		agentActionCounts[a.AgentID]++
+	}
+
+	agentSnaps := make([]AgentSnapshot, 0, len(profiles))
+	for _, p := range profiles {
+		agentSnaps = append(agentSnaps, AgentSnapshot{
+			AgentID:       p.ID,
+			AgentName:     p.Name,
+			SentimentBias: p.SentimentBias,
+			ActionCount:   agentActionCounts[p.ID],
+			Stance:        p.Stance,
+		})
+	}
+
+	frame := ReplayFrame{
+		ProjectID:   projectID,
+		SimID:       simID,
+		Hour:        hour,
+		SimHour:     simHour,
+		AgentCount:  len(profiles),
+		ActionCount: len(actions),
+		Posts:       posts,
+		Agents:      agentSnaps,
+		Timestamp:   time.Now().Format(time.RFC3339),
+	}
+	b, _ := json.Marshal(frame)
+	frameID := fmt.Sprintf("%s_%s_h%03d", projectID, simID, hour)
+	_ = storage.DB.Insert("replay_frames", frameID, storage.Record{
+		"id":         frameID,
+		"project_id": projectID,
+		"sim_id":     simID,
+		"hour":       fmt.Sprintf("%d", hour),
+		"sim_hour":   fmt.Sprintf("%d", simHour),
+		"data":       string(b),
+	})
 }
