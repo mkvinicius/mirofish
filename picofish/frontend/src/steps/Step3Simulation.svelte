@@ -8,26 +8,59 @@
   let platform = 'both'
   let status = null
   let actions = []
+  let liveActions = []  // SSE live feed
   let history = []
   let error = ''
   let interval = null
   let showHistory = false
+  let eventSource = null
+  let liveActionList = null  // bind for auto-scroll
 
   onMount(async () => {
     await refresh()
-    if (status?.status === 'completed') {
+    if (status?.status === 'running') {
+      openFeed()
+    } else if (status?.status === 'completed') {
       actions = await api.getSimulationActions($currentProject.id).catch(() => [])
     }
     history = await api.getSimHistory($currentProject.id).catch(() => [])
   })
-  onDestroy(() => { if (interval) clearInterval(interval) })
+
+  onDestroy(() => {
+    if (interval) clearInterval(interval)
+    closeFeed()
+  })
+
+  function openFeed() {
+    closeFeed()
+    eventSource = new EventSource(api.simFeedUrl($currentProject.id))
+    eventSource.onmessage = (e) => {
+      try {
+        const ev = JSON.parse(e.data)
+        if (ev.type === 'action' && ev.action) {
+          liveActions = [ev.action, ...liveActions].slice(0, 200)
+          if (status) status = { ...status, action_count: (status.action_count || 0) + 1 }
+        } else if (ev.type === 'hour') {
+          if (status) status = { ...status, current_hour: ev.hour ?? status.current_hour }
+        } else if (ev.type === 'done') {
+          closeFeed()
+          status = { ...status, status: 'completed' }
+          api.getSimulationActions($currentProject.id).then(a => actions = a).catch(() => {})
+        } else if (ev.type === 'error') {
+          closeFeed()
+        }
+      } catch {}
+    }
+    eventSource.onerror = () => closeFeed()
+  }
+
+  function closeFeed() {
+    if (eventSource) { eventSource.close(); eventSource = null }
+  }
 
   async function refresh() {
     try {
       status = await api.getSimulationStatus($currentProject.id)
-      if (status?.status === 'running') {
-        actions = await api.getSimulationActions($currentProject.id)
-      }
     } catch {}
   }
 
@@ -38,8 +71,10 @@
     try {
       await api.startSimulation($currentProject.id, totalHours, platform, topic)
       status = { status: 'running', current_hour: 0, total_hours: totalHours, agent_count: 0, action_count: 0 }
+      liveActions = []
       actions = []
-      if (!interval) interval = setInterval(refresh, 2000)
+      openFeed()
+      if (!interval) interval = setInterval(refresh, 10000)
     } catch(e) { error = e.message }
   }
 
@@ -47,19 +82,18 @@
     try {
       await api.stopSimulation($currentProject.id)
       if (interval) { clearInterval(interval); interval = null }
+      closeFeed()
       await refresh()
     } catch(e) { error = e.message }
   }
 
   $: if (status?.status === 'completed' || status?.status === 'stopped') {
     if (interval) { clearInterval(interval); interval = null }
-    if (status.status === 'completed') {
-      api.getSimulationActions($currentProject.id).then(a => actions = a).catch(() => {})
-    }
   }
 
-  $: if (status?.status === 'running' && !interval) {
-    interval = setInterval(refresh, 2000)
+  // Auto-scroll live feed to top when new actions arrive
+  $: if (liveActions.length && liveActionList) {
+    liveActionList.scrollTop = 0
   }
 
   function actionColor(type) {
@@ -172,6 +206,12 @@
 
   .actions-feed h3 { font-size: 0.9rem; color: #64748b; margin-bottom: 12px; }
   .action-list { display: flex; flex-direction: column; gap: 8px; max-height: 400px; overflow-y: auto; }
+  .live-dot {
+    display: inline-block; width: 7px; height: 7px;
+    background: #22c55e; border-radius: 50%; margin-right: 4px;
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
   .action-item {
     background: #1e293b;
     border: 1px solid #334155;
@@ -274,9 +314,28 @@
   </div>
 {/if}
 
-{#if actions.length > 0}
+{#if status?.status === 'running' && liveActions.length > 0}
   <div class="actions-feed">
-    <h3>Feed ao Vivo ({actions.length} ações)</h3>
+    <h3><span class="live-dot"></span>Feed ao Vivo ({liveActions.length} ações)</h3>
+    <div class="action-list" bind:this={liveActionList}>
+      {#each liveActions as a}
+        <div class="action-item">
+          <div class="action-header">
+            <span class="action-platform">{platformIcon(a.platform)}</span>
+            <span class="action-agent">{a.agent_name}</span>
+            <span class="action-type" style="color:{actionColor(a.action_type)}">{a.action_type}</span>
+            <span style="font-size: 0.7rem; color: #475569; margin-left: auto">H{a.sim_hour}</span>
+          </div>
+          {#if a.content}
+            <p class="action-content">{a.content}</p>
+          {/if}
+        </div>
+      {/each}
+    </div>
+  </div>
+{:else if actions.length > 0}
+  <div class="actions-feed">
+    <h3>Ações da Simulação ({actions.length})</h3>
     <div class="action-list">
       {#each actions as a}
         <div class="action-item">

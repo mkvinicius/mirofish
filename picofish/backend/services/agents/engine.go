@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"picofish/config"
 	"picofish/services/llm"
 	"picofish/storage"
 )
@@ -262,12 +263,30 @@ func (w *World) getFeed(agentID, platform string, size int, agent *OasisAgentPro
 	}
 
 	for _, p := range candidates {
-		// Calibrated recency decay: exp(-0.15 * hours_since_post)
+		// Calibrated recency decay: exp(-decayRate * hours_since_post)
+		decayRate := 0.15
+		popWeight := 0.3
+		echoBoost := 1.8
+		oppSuppress := 0.4
+		if config.Global != nil {
+			if config.Global.RecencyDecayRate > 0 {
+				decayRate = config.Global.RecencyDecayRate
+			}
+			if config.Global.PopularityLogWeight > 0 {
+				popWeight = config.Global.PopularityLogWeight
+			}
+			if config.Global.EchoChamberBoost > 0 {
+				echoBoost = config.Global.EchoChamberBoost
+			}
+			if config.Global.OppStanceSuppression > 0 {
+				oppSuppress = config.Global.OppStanceSuppression
+			}
+		}
 		hoursSincePost := float64(now-parseTime(p.CreatedAt)) / 3600.0
-		recencyScore := math.Exp(-0.15 * hoursSincePost)
+		recencyScore := math.Exp(-decayRate * hoursSincePost)
 
-		// Logarithmic popularity: log(1 + likes + reposts) * 0.3
-		popScore := math.Log1p(float64(p.LikeCount+p.RepostCount)) * 0.3
+		// Logarithmic popularity
+		popScore := math.Log1p(float64(p.LikeCount+p.RepostCount)) * popWeight
 
 		// Echo chamber: stance-based boosting and suppression
 		chamberBoost := 1.0
@@ -275,12 +294,12 @@ func (w *World) getFeed(agentID, platform string, size int, agent *OasisAgentPro
 			authorStance := w.agentStances[p.AuthorID]
 			if authorStance != "" {
 				if agent.Stance == authorStance {
-					chamberBoost = 1.8 // same stance: strong algorithmic boost
+					chamberBoost = echoBoost
 				} else if isOppositeStance(agent.Stance, authorStance) {
-					chamberBoost = 0.4 // opposite stance: suppressed
+					chamberBoost = oppSuppress
 				}
 			} else if followed[p.AuthorID] {
-				chamberBoost = 1.8 // explicitly followed: boost
+				chamberBoost = echoBoost
 			}
 		}
 
@@ -337,6 +356,75 @@ var Global = &Manager{
 	cancel:        make(map[string]context.CancelFunc),
 	injections:    make(map[string][]InjectionEvent),
 	influenceNets: make(map[string][]*InfluenceEdge),
+}
+
+// ── Simulation Broadcaster (SSE live feed) ─────────────────────────────────
+
+// SimEvent is a single live event broadcast during simulation.
+type SimEvent struct {
+	Type      string `json:"type"`       // "action"|"hour"|"injection"|"done"|"error"
+	ProjectID string `json:"project_id"`
+	SimHour   int    `json:"sim_hour"`
+	AgentName string `json:"agent_name,omitempty"`
+	AgentID   string `json:"agent_id,omitempty"`
+	Action    string `json:"action_type,omitempty"`
+	Content   string `json:"content,omitempty"` // truncated preview
+	TotalActions int `json:"total_actions,omitempty"`
+	Platform  string `json:"platform,omitempty"`
+}
+
+// SimulationBroadcaster is a pub-sub hub for live simulation events.
+type SimulationBroadcaster struct {
+	mu       sync.RWMutex
+	channels map[string][]chan SimEvent // projectID → subscriber channels
+}
+
+// Broadcaster is the global hub for simulation SSE.
+var Broadcaster = &SimulationBroadcaster{
+	channels: make(map[string][]chan SimEvent),
+}
+
+// Subscribe returns a buffered channel that receives events for the given project.
+// Call the returned cancel func when done to unsubscribe and free resources.
+func (b *SimulationBroadcaster) Subscribe(projectID string) (chan SimEvent, func()) {
+	ch := make(chan SimEvent, 64)
+	b.mu.Lock()
+	b.channels[projectID] = append(b.channels[projectID], ch)
+	b.mu.Unlock()
+	cancel := func() {
+		b.mu.Lock()
+		cs := b.channels[projectID]
+		for i, c := range cs {
+			if c == ch {
+				b.channels[projectID] = append(cs[:i], cs[i+1:]...)
+				break
+			}
+		}
+		b.mu.Unlock()
+		close(ch)
+	}
+	return ch, cancel
+}
+
+// Publish sends an event to all subscribers for a project (non-blocking).
+func (b *SimulationBroadcaster) Publish(ev SimEvent) {
+	b.mu.RLock()
+	cs := b.channels[ev.ProjectID]
+	b.mu.RUnlock()
+	for _, ch := range cs {
+		select {
+		case ch <- ev:
+		default: // drop if subscriber is slow
+		}
+	}
+}
+
+// workerPoolSize returns the configured simulation worker pool size.
+func workerPoolSize() int {
+	if config.Global != nil && config.Global.SimWorkerPoolSize > 0 {
+		return config.Global.SimWorkerPoolSize
+	}
+	return 10
 }
 
 // Start launches the simulation for a project.
@@ -450,7 +538,13 @@ var hourMultiplier = map[int]float64{
 	18: 1.00, 19: 1.50, 20: 1.40, 21: 1.20, 22: 0.80, 23: 0.40,
 }
 
-const deadHourThreshold = 0.1 // below this multiplier, skip agent turns
+// deadHourThreshold returns the configured threshold below which agent turns are skipped.
+func getDeadHourThreshold() float64 {
+	if config.Global != nil && config.Global.DeadHourThreshold > 0 {
+		return config.Global.DeadHourThreshold
+	}
+	return 0.1
+}
 
 func (m *Manager) runLoop(ctx context.Context, projectID, simID string,
 	profiles []*OasisAgentProfile, totalHours int, platform, topic string, state *SimState, seed int64) {
@@ -490,7 +584,7 @@ func (m *Manager) runLoop(ctx context.Context, projectID, simID string,
 		mult := hourMultiplier[simHour]
 
 		// Dead hour check: skip agent turns entirely for performance
-		if mult < deadHourThreshold {
+		if mult < getDeadHourThreshold() {
 			select {
 			case <-ctx.Done():
 				persistMemories(projectID, memories)
@@ -538,7 +632,14 @@ func (m *Manager) runLoop(ctx context.Context, projectID, simID string,
 
 		var hourActions []*AgentAction
 		var hourActionsMu sync.Mutex
-		sem := make(chan struct{}, 3)
+		poolSize := workerPoolSize()
+		if poolSize > len(active) {
+			poolSize = len(active)
+		}
+		if poolSize < 1 {
+			poolSize = 1
+		}
+		sem := make(chan struct{}, poolSize)
 		var wg sync.WaitGroup
 		for _, agent := range active {
 			wg.Add(1)
@@ -547,6 +648,14 @@ func (m *Manager) runLoop(ctx context.Context, projectID, simID string,
 				sem <- struct{}{}
 				defer func() { <-sem }()
 
+				// Recover from any panic inside agentAct — a single agent
+				// failure must never crash the entire simulation.
+				defer func() {
+					if r := recover(); r != nil {
+						fmt.Printf("[engine] agent %s (%s) panicked: %v\n", ag.Name, ag.ID, r)
+					}
+				}()
+
 				action := m.agentAct(ctx, ag, activePlatform, topic, world,
 					memories[ag.ID], memManagers[ag.ID], hour, simHour)
 				if action == nil {
@@ -554,12 +663,43 @@ func (m *Manager) runLoop(ctx context.Context, projectID, simID string,
 				}
 				saveSimAction(action)
 				m.incrementActions(projectID)
+
+				// Broadcast live event
+				preview := action.Content
+				if len(preview) > 120 {
+					preview = preview[:120] + "…"
+				}
+				Broadcaster.Publish(SimEvent{
+					Type:      "action",
+					ProjectID: projectID,
+					SimHour:   simHour,
+					AgentName: action.AgentName,
+					AgentID:   action.AgentID,
+					Action:    action.ActionType,
+					Content:   preview,
+					Platform:  action.Platform,
+				})
+
 				hourActionsMu.Lock()
 				hourActions = append(hourActions, action)
 				hourActionsMu.Unlock()
 			}(agent)
 		}
 		wg.Wait()
+
+		// Broadcast hour completion
+		m.mu.Lock()
+		totalActs := 0
+		if s, ok := m.states[projectID]; ok {
+			totalActs = s.ActionCount
+		}
+		m.mu.Unlock()
+		Broadcaster.Publish(SimEvent{
+			Type:         "hour",
+			ProjectID:    projectID,
+			SimHour:      simHour,
+			TotalActions: totalActs,
+		})
 
 		// Record influence edges from actions this hour
 		m.recordInfluence(projectID, hourActions, simHour, world)
@@ -586,6 +726,13 @@ func (m *Manager) runLoop(ctx context.Context, projectID, simID string,
 	state.Status = "completed"
 	saveSimHistory(projectID, simID, state)
 	m.setStatus(projectID, "completed")
+
+	// Broadcast simulation done
+	Broadcaster.Publish(SimEvent{
+		Type:         "done",
+		ProjectID:    projectID,
+		TotalActions: state.ActionCount,
+	})
 }
 
 // initSocialGraph seeds the follow graph: same-stance agents follow each other.

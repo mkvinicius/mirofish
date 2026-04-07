@@ -56,6 +56,15 @@ export const api = {
   compareScenarios: (id, base_topic, scenarios) =>
     request('POST', `/projects/${id}/scenarios/compare`, { base_topic, scenarios }),
 
+  // Phase 3: Simulation live feed SSE URL
+  simFeedUrl: (id) => `${BASE}/projects/${id}/simulation/feed`,
+
+  // Phase 3: Clone project
+  cloneProject: (id, name) => request('POST', `/projects/${id}/clone`, { name }),
+
+  // Phase 3: Seeds
+  listSeeds: () => request('GET', '/seeds'),
+
   // Phase 2: Injection
   injectEvent: (id, event) =>
     request('POST', `/projects/${id}/simulation/inject`, event),

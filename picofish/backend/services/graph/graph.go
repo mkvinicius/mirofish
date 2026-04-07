@@ -58,6 +58,8 @@ type GraphSummary struct {
 
 // BuildFromDocument extracts an ontology, entities, and relations from text
 // using the LLM, generates embeddings for each, and persists to the store.
+// Validates minimum viable graph (≥3 entities, ≥2 relationships); retries
+// with a simplified prompt if the first attempt is too sparse.
 func BuildFromDocument(ctx context.Context, projectID, document string) (*GraphSummary, error) {
 	// Step 1: ontology
 	ont, err := generateOntology(ctx, document)
@@ -71,22 +73,42 @@ func BuildFromDocument(ctx context.Context, projectID, document string) (*GraphS
 		return nil, fmt.Errorf("extract: %w", err)
 	}
 
-	// Step 3: generate embeddings concurrently (best-effort)
+	// Retry with a simpler prompt if the first pass returned too few entities
+	if len(nodes) < 3 {
+		fmt.Printf("[graph] only %d entities — retrying with simplified prompt\n", len(nodes))
+		retryNodes, retryEdges, err2 := extractEntitiesSimple(ctx, projectID, document, ont)
+		if err2 == nil && len(retryNodes) >= len(nodes) {
+			nodes = retryNodes
+			edges = retryEdges
+		}
+	}
+
+	// Step 3: validate minimum viable graph
+	if len(nodes) < 3 {
+		return nil, fmt.Errorf("graph validation: need at least 3 entities (got %d) — try a longer or more detailed document", len(nodes))
+	}
+	if len(edges) < 2 {
+		return nil, fmt.Errorf("graph validation: need at least 2 relationships (got %d) — try a document with more interconnected topics", len(edges))
+	}
+
+	// Step 4: generate embeddings concurrently (best-effort)
 	embedNodes(ctx, nodes)
 	embedEdges(ctx, edges)
 
-	// Step 4: persist
+	// Step 5: persist nodes
 	for i := range nodes {
 		if err := saveNode(&nodes[i]); err != nil {
 			return nil, err
 		}
 	}
-	nodeByName := make(map[string]*Node)
+
+	// Step 6: resolve edge names to IDs, then persist
+	nodeByName := make(map[string]*Node, len(nodes))
 	for i := range nodes {
 		nodeByName[nodes[i].Name] = &nodes[i]
 	}
+	savedEdges := 0
 	for i := range edges {
-		// Resolve names
 		if src, ok := nodeByName[edges[i].SourceName]; ok {
 			edges[i].SourceID = src.ID
 		}
@@ -99,12 +121,13 @@ func BuildFromDocument(ctx context.Context, projectID, document string) (*GraphS
 		if err := saveEdge(&edges[i]); err != nil {
 			return nil, err
 		}
+		savedEdges++
 	}
 
 	return &GraphSummary{
 		ProjectID:   projectID,
 		NodeCount:   len(nodes),
-		EdgeCount:   len(edges),
+		EdgeCount:   savedEdges,
 		EntityTypes: ont.EntityTypes,
 	}, nil
 }
@@ -244,6 +267,68 @@ Document:
 		})
 	}
 
+	return nodes, edges, nil
+}
+
+// extractEntitiesSimple is a fallback extractor with a more permissive prompt
+// used when the first extraction produces fewer than 3 entities.
+func extractEntitiesSimple(ctx context.Context, projectID, document string, ont *ontology) ([]Node, []Edge, error) {
+	prompt := fmt.Sprintf(`List the key people, organizations, places, and concepts in this text.
+
+Return ONLY valid JSON:
+{"entities": [{"type": "Person|Organization|Concept|Place", "name": "Name", "summary": "One sentence."}]}
+
+Text: %s`, trunc(document, 3000))
+
+	jsonSystem := llm.System("You are a JSON generator. Output ONLY raw valid JSON.")
+	resp, err := llm.Chat(ctx, []llm.Message{jsonSystem, llm.User(prompt)},
+		llm.WithTemperature(0.1), llm.WithMaxTokens(4096))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var raw struct {
+		Entities []struct {
+			Type    string `json:"type"`
+			Name    string `json:"name"`
+			Summary string `json:"summary"`
+		} `json:"entities"`
+	}
+	if err := llm.ParseJSON(resp, &raw); err != nil {
+		return nil, nil, fmt.Errorf("parse simple entities: %w", err)
+	}
+
+	now := time.Now().Format(time.RFC3339)
+	var nodes []Node
+	for _, e := range raw.Entities {
+		if e.Name == "" {
+			continue
+		}
+		nodes = append(nodes, Node{
+			ID:        uuid.NewString(),
+			ProjectID: projectID,
+			Type:      e.Type,
+			Name:      e.Name,
+			Labels:    []string{"Entity", e.Type},
+			Summary:   e.Summary,
+			CreatedAt: now,
+		})
+	}
+
+	// Simple relationship: connect consecutive entities
+	var edges []Edge
+	for i := 0; i+1 < len(nodes); i++ {
+		edges = append(edges, Edge{
+			ID:         uuid.NewString(),
+			ProjectID:  projectID,
+			SourceName: nodes[i].Name,
+			TargetName: nodes[i+1].Name,
+			Relation:   "RELATES_TO",
+			Fact:       fmt.Sprintf("%s relates to %s", nodes[i].Name, nodes[i+1].Name),
+			ValidAt:    now,
+			CreatedAt:  now,
+		})
+	}
 	return nodes, edges, nil
 }
 

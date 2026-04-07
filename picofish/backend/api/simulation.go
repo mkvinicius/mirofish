@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	agentsvc "picofish/services/agents"
 	graphsvc "picofish/services/graph"
@@ -106,6 +107,53 @@ func handleGetSimulationActions(w http.ResponseWriter, req *http.Request) {
 		actions = []*agentsvc.AgentAction{}
 	}
 	JSON(w, http.StatusOK, actions)
+}
+
+// handleSimFeed streams live simulation events via Server-Sent Events (SSE).
+// GET /api/v1/projects/:id/simulation/feed
+func handleSimFeed(w http.ResponseWriter, req *http.Request) {
+	projectID := extractProjectID(req.URL.Path)
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		Err(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+
+	sendEvent := func(data interface{}) {
+		b, _ := json.Marshal(data)
+		fmt.Fprintf(w, "data: %s\n\n", b)
+		flusher.Flush()
+	}
+
+	ch, cancel := agentsvc.Broadcaster.Subscribe(projectID)
+	defer cancel()
+
+	ticker := time.NewTicker(20 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-req.Context().Done():
+			return
+		case <-ticker.C:
+			fmt.Fprintf(w, ": keepalive\n\n")
+			flusher.Flush()
+		case ev, open := <-ch:
+			if !open {
+				return
+			}
+			sendEvent(ev)
+			if ev.Type == "done" || ev.Type == "error" {
+				return
+			}
+		}
+	}
 }
 
 // handleInjectEvent injects a mid-simulation event (breaking news / narrative shift).

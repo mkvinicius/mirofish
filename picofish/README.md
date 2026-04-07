@@ -45,6 +45,12 @@ The result? Runs on a **Raspberry Pi**.
 | Mid-sim injection | No | **Yes — InjectionEvent queue** |
 | Prediction tracking | No | **Yes — confidence scores + Brier calibration** |
 | Simulation replay | No | **Yes — JSON/CSV/Markdown export** |
+| Live simulation feed | No | **Yes — SSE per-action stream** |
+| Report streaming | No | **Yes — SSE progress log** |
+| Project dashboard | No | **Yes — card grid, search, clone** |
+| Example seeds | No | **Yes — 3 built-in scenarios** |
+| Panic recovery | No | **Yes — per-request, logged** |
+| Configurable params | No | **Yes — full .env surface** |
 
 ---
 
@@ -145,6 +151,67 @@ GET /api/v1/projects/:id/simulation/replay/export?format=json|csv|md
 
 ---
 
+## Phase 3 — Production Features
+
+### Live Simulation Feed (SSE)
+Every agent action is broadcast in real time as the simulation runs:
+```
+GET /api/v1/projects/:id/simulation/feed   (text/event-stream)
+```
+Event types: `action` · `hour` · `injection` · `done` · `error`. The frontend shows a live scrolling action log with platform icons and agent names, replacing the polling loop entirely.
+
+### Streaming Report Progress
+Report generation emits progress events over SSE as each section is written:
+```
+GET /api/v1/projects/:id/report/stream
+```
+The UI shows a collapsible log (e.g. `📋 Planning… → ✍ Writing Seção 1… → 🔍 Critique pass 1…`), so you see the ReACT agent working in real time.
+
+### Project Dashboard
+The home screen shows a card grid with per-project stats (agent count, action count, last simulation date, prediction count) loaded asynchronously. Features: live search filter, clone modal, one-click delete with confirmation.
+
+### Example Seeds
+Three built-in scenario seeds available via the UI "Load example" dropdown or the API:
+```
+GET /api/v1/seeds
+```
+| Seed | Topic | Suggested hours | Suggested agents |
+|---|---|---|---|
+| Financial Crisis | Central bank announces emergency interest rate hike | 48 | 30 |
+| Climate Policy | Global summit signs landmark carbon reduction treaty | 72 | 40 |
+| Product Launch | Major tech company releases controversial AI assistant | 36 | 25 |
+
+### Error Resilience
+- **Graph validation**: minimum 3 entities + 2 relationships; automatic fallback to simpler extraction prompt
+- **Per-call LLM timeout**: configurable `LLM_TIMEOUT_SECONDS` (default 30s) applied per attempt, not per session
+- **Per-agent panic recovery**: `defer recover()` in every goroutine; one crashed agent never halts the simulation
+- **Global HTTP panic recovery middleware**: all panics are caught, logged with stack trace + `request_id`, returned as JSON error
+
+### Full Configuration Surface
+Every tunable parameter is now an environment variable with a sensible default — no code changes needed:
+
+| Variable | Default | Description |
+|---|---|---|
+| `LLM_TIMEOUT_SECONDS` | 30 | Per-LLM-call timeout |
+| `LLM_MAX_RETRIES` | 3 | Retry attempts with exponential backoff |
+| `SIMULATION_WORKER_POOL_SIZE` | 10 | Concurrent agent goroutines |
+| `MAX_AGENTS` | 100 | Hard cap on agents per project |
+| `DEFAULT_SIMULATION_HOURS` | 24 | Default simulation length |
+| `DEAD_HOUR_THRESHOLD` | 0.1 | Hour multiplier below which hour is skipped |
+| `ECHO_CHAMBER_BOOST` | 1.8 | Feed score multiplier for same-stance content |
+| `OPP_STANCE_SUPPRESSION` | 0.4 | Feed score multiplier for opposite-stance |
+| `RECENCY_DECAY_RATE` | 0.15 | Exponential decay rate for post age |
+| `POPULARITY_LOG_WEIGHT` | 0.3 | Weight of log(likes+reposts) in feed score |
+| `BELIEF_DECAY_PER_HOUR` | 0.05 | Belief strength decay per simulated hour |
+| `CONTRADICTION_THRESHOLD` | 0.3 | Cosine similarity below which belief is revised |
+| `MAX_EPISODIC_MEMORY_INDIVIDUAL` | 50 | Max episodic events per individual agent |
+| `MAX_EPISODIC_MEMORY_GROUP` | 20 | Max episodic events per group agent |
+| `REPORT_CRITIQUE_ITERATIONS` | 2 | Self-critique passes after draft |
+| `MIN_TOOL_CALLS_PER_SECTION` | 2 | Minimum evidence calls per report section |
+| `GRAPH_MAX_HOPS` | 3 | Max GraphRAG hop depth |
+
+---
+
 ## Quick Start
 
 ### Requirements
@@ -182,6 +249,15 @@ EMBED_MODEL=text-embedding-3-small   # optional, defaults to LLM_MODEL
 
 DATA_DIR=./data
 PORT=5002
+
+# Tuning (all optional, sensible defaults)
+# LLM_TIMEOUT_SECONDS=30
+# LLM_MAX_RETRIES=3
+# SIMULATION_WORKER_POOL_SIZE=10
+# MAX_AGENTS=100
+# ECHO_CHAMBER_BOOST=1.8
+# OPP_STANCE_SUPPRESSION=0.4
+# REPORT_CRITIQUE_ITERATIONS=2
 ```
 
 ### Run (development)

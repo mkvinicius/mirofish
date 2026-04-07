@@ -8,6 +8,11 @@ import (
 	"picofish/storage"
 )
 
+// RegisterSeeds registers the /api/v1/seeds endpoint.
+func RegisterSeeds(r *Router) {
+	r.Handle("GET", "/api/v1/seeds", handleListSeeds)
+}
+
 func RegisterProjects(r *Router) {
 	r.Handle("POST", "/api/v1/projects", handleCreateProject)
 	r.Handle("GET", "/api/v1/projects", handleListProjects)
@@ -60,6 +65,8 @@ func projectsSubrouter(w http.ResponseWriter, req *http.Request) {
 	case isSimActions(path) && req.Method == http.MethodGet:
 		handleGetSimulationActions(w, req)
 	// Phase 2: inject, replay
+	case isSimFeed(path) && req.Method == http.MethodGet:
+		handleSimFeed(w, req)
 	case isSimInject(path) && req.Method == http.MethodPost:
 		handleInjectEvent(w, req)
 	case isReplayExport(path) && req.Method == http.MethodGet:
@@ -93,6 +100,8 @@ func projectsSubrouter(w http.ResponseWriter, req *http.Request) {
 		handleGetNetwork(w, req)
 	case isScenarios(path) && req.Method == http.MethodPost:
 		handleCompareScenarios(w, req)
+	case isProjectClone(path) && req.Method == http.MethodPost:
+		handleCloneProject(w, req)
 	case isProjectDelete(path) && req.Method == http.MethodDelete:
 		handleDeleteProject(w, req)
 	default:
@@ -123,7 +132,8 @@ func isReport(p string) bool {
 }
 func isChat(p string) bool { return endsWith(p, "/chat") }
 
-// Phase 2 path matchers
+// Phase 2+3 path matchers
+func isSimFeed(p string) bool         { return endsWith(p, "/simulation/feed") }
 func isSimInject(p string) bool       { return endsWith(p, "/simulation/inject") }
 func isReplay(p string) bool          { return endsWith(p, "/simulation/replay") }
 func isReplayExport(p string) bool    { return endsWith(p, "/simulation/replay/export") }
@@ -139,6 +149,8 @@ func isPredictions(p string) bool {
 }
 func isPredictionExtract(p string) bool { return endsWith(p, "/report/predictions/extract") }
 func isPredictionOutcome(p string) bool { return endsWith(p, "/outcome") && containsStr(p, "/predictions/") }
+
+func isProjectClone(p string) bool  { return endsWith(p, "/clone") }
 
 func containsStr(s, sub string) bool {
 	for i := 0; i <= len(s)-len(sub); i++ {
@@ -235,4 +247,156 @@ func handleDeleteProject(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	JSON(w, http.StatusOK, map[string]string{"deleted": id})
+}
+
+// handleCloneProject duplicates graph nodes + agents into a new project.
+// Simulation results (actions, reports, replay frames) are NOT copied.
+// POST /api/v1/projects/:id/clone
+func handleCloneProject(w http.ResponseWriter, req *http.Request) {
+	srcID := extractProjectID(req.URL.Path)
+	var body struct {
+		Name string `json:"name"`
+	}
+	_ = json.NewDecoder(req.Body).Decode(&body)
+
+	// Load source project
+	src, ok := storage.DB.Get("projects", srcID)
+	if !ok {
+		Err(w, http.StatusNotFound, "project not found")
+		return
+	}
+	srcName := storage.GetStr(src, "name")
+	if body.Name == "" {
+		body.Name = srcName + " (clone)"
+	}
+
+	newID := uuid.NewString()
+	if err := storage.DB.Insert("projects", newID, storage.Record{
+		"id":          newID,
+		"name":        body.Name,
+		"description": storage.GetStr(src, "description"),
+		"status":      "created",
+	}); err != nil {
+		Err(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Copy graph nodes
+	nodes := storage.DB.QueryFunc("graph_nodes", func(r storage.Record) bool {
+		return storage.GetStr(r, "project_id") == srcID
+	})
+	for _, n := range nodes {
+		newNodeID := uuid.NewString()
+		cloned := make(storage.Record)
+		for k, v := range n {
+			cloned[k] = v
+		}
+		cloned["id"] = newNodeID
+		cloned["project_id"] = newID
+		// Update project_id inside "data" JSON
+		cloned["data"] = replaceJSONField(storage.GetStr(n, "data"), "project_id", newID)
+		_ = storage.DB.Insert("graph_nodes", newNodeID, cloned)
+	}
+
+	// Copy graph edges
+	edges := storage.DB.QueryFunc("graph_edges", func(r storage.Record) bool {
+		return storage.GetStr(r, "project_id") == srcID
+	})
+	for _, e := range edges {
+		newEdgeID := uuid.NewString()
+		cloned := make(storage.Record)
+		for k, v := range e {
+			cloned[k] = v
+		}
+		cloned["id"] = newEdgeID
+		cloned["project_id"] = newID
+		cloned["data"] = replaceJSONField(storage.GetStr(e, "data"), "project_id", newID)
+		_ = storage.DB.Insert("graph_edges", newEdgeID, cloned)
+	}
+
+	// Copy agent profiles
+	agentRecords := storage.DB.QueryFunc("agents", func(r storage.Record) bool {
+		return storage.GetStr(r, "project_id") == srcID
+	})
+	for _, a := range agentRecords {
+		newAgentID := uuid.NewString()
+		cloned := make(storage.Record)
+		for k, v := range a {
+			cloned[k] = v
+		}
+		cloned["id"] = newAgentID
+		cloned["project_id"] = newID
+		cloned["data"] = replaceJSONField(storage.GetStr(a, "data"), "project_id", newID)
+		_ = storage.DB.Insert("agents", newAgentID, cloned)
+	}
+
+	JSON(w, http.StatusCreated, map[string]interface{}{
+		"id":             newID,
+		"name":           body.Name,
+		"cloned_from":    srcID,
+		"nodes_copied":   len(nodes),
+		"edges_copied":   len(edges),
+		"agents_copied":  len(agentRecords),
+	})
+}
+
+// replaceJSONField does a naive string replacement of a JSON field value.
+// Used for updating project_id inside copied records' data blobs.
+func replaceJSONField(data, field, newVal string) string {
+	old := `"` + field + `":"`
+	idx := 0
+	for i := 0; i <= len(data)-len(old); i++ {
+		if data[i:i+len(old)] == old {
+			idx = i + len(old)
+			end := idx
+			for end < len(data) && data[end] != '"' {
+				end++
+			}
+			return data[:idx] + newVal + data[end:]
+		}
+	}
+	return data
+}
+
+// ── Seeds ──────────────────────────────────────────────────────────────────
+
+// Seed is a pre-built example scenario.
+type Seed struct {
+	ID                   string `json:"id"`
+	Name                 string `json:"name"`
+	Description          string `json:"description"`
+	SeedText             string `json:"seed_text"`
+	SuggestedHours       int    `json:"suggested_hours"`
+	SuggestedAgentCount  int    `json:"suggested_agent_count"`
+}
+
+var builtinSeeds = []Seed{
+	{
+		ID:   "financial_crisis",
+		Name: "2008 Financial Crisis",
+		Description: "Simulate public opinion dynamics around a major bank collapse",
+		SeedText: `Major investment bank files for bankruptcy after mounting subprime mortgage losses. Stock markets plunge 7% in a single day. Government considers a massive bailout package worth hundreds of billions. Public anger grows as ordinary citizens face job losses and pension cuts while executives keep bonuses. Unemployment fears spread to manufacturing and retail sectors. Media coverage intensifies with 24-hour news cycles. Political parties take sharply opposing stances: conservatives oppose the bailout as corporate welfare while progressives demand strict conditions and executive pay caps. Small business owners struggle to access credit. International markets show contagion as European banks reveal their own exposure. Central banks coordinate emergency interest rate cuts.`,
+		SuggestedHours:      24,
+		SuggestedAgentCount: 30,
+	},
+	{
+		ID:   "climate_policy",
+		Name: "Climate Legislation Debate",
+		Description: "Public reaction to sweeping new climate legislation",
+		SeedText: `Government announces landmark climate legislation requiring 50% reduction in carbon emissions within 10 years. Industrial sector warns of massive job losses in coal, oil, and gas regions. Environmental groups celebrate the measure as long overdue. Economists debate whether the green transition will create more jobs than it destroys. Rural communities dependent on fossil fuel industries protest in capital cities. Tech companies announce accelerated clean energy investments. Opposition party vows to repeal the law if elected. Scientists warn the targets are still insufficient to limit warming to 1.5°C. Developing nations demand wealthy countries provide climate finance. Young climate activists call for even more aggressive action while unions negotiate transition support packages for displaced workers.`,
+		SuggestedHours:      48,
+		SuggestedAgentCount: 40,
+	},
+	{
+		ID:   "product_launch",
+		Name: "Viral Tech Product Launch",
+		Description: "Public reaction to a transformative consumer technology release",
+		SeedText: `Major tech company unveils revolutionary AI-powered device that replaces smartphones with a wearable screen-free assistant. Price set at $799. Early reviews are polarized — tech enthusiasts call it the future of human-computer interaction while privacy advocates warn of unprecedented surveillance potential. Pre-orders sell out in 3 hours. Competitor stocks fall sharply. Content creators rush to produce first impressions videos. Disability advocates praise the hands-free interface. School districts debate whether to ban the device in classrooms. Cybersecurity researchers warn the always-on microphone creates new attack vectors. Retail workers strike demanding higher wages after announcement of AI-powered store automation. The device's neural interface raises ethical questions about cognitive liberty and data ownership.`,
+		SuggestedHours:      12,
+		SuggestedAgentCount: 25,
+	},
+}
+
+func handleListSeeds(w http.ResponseWriter, _ *http.Request) {
+	JSON(w, http.StatusOK, builtinSeeds)
 }

@@ -1,4 +1,5 @@
 <script>
+  import { onMount } from 'svelte'
   import { api } from '../lib/api.js'
   import { currentProject, currentStep } from '../stores/project.js'
 
@@ -7,6 +8,14 @@
   let result = null
   let error = ''
   let nodes = []
+  let seeds = []
+  let selectedSeedId = ''
+  let seedHints = null  // { suggestedHours, suggestedAgentCount }
+
+  onMount(async () => {
+    loadExisting()
+    seeds = await api.listSeeds().catch(() => [])
+  })
 
   async function buildGraph() {
     if (!document.trim()) return
@@ -22,8 +31,16 @@
     try { nodes = await api.getNodes($currentProject.id) } catch {}
   }
 
-  import { onMount } from 'svelte'
-  onMount(loadExisting)
+  function onSeedChange() {
+    if (!selectedSeedId) { seedHints = null; return }
+    const seed = seeds.find(s => s.id === selectedSeedId)
+    if (!seed) return
+    document = seed.text
+    seedHints = {
+      suggestedHours: seed.suggested_hours,
+      suggestedAgentCount: seed.suggested_agent_count,
+    }
+  }
 </script>
 
 <style>
@@ -111,11 +128,46 @@
   .error { color: #ef4444; font-size: 0.85rem; margin-top: 8px; }
   .loading { color: #64748b; font-size: 0.85rem; }
 
+  .seed-row { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  .seed-label { font-size: 0.8rem; color: #64748b; white-space: nowrap; }
+  select.seed-select {
+    background: #0f172a; border: 1px solid #334155; color: #e2e8f0;
+    padding: 7px 10px; border-radius: 8px; font-size: 0.85rem; outline: none; flex: 1; min-width: 200px;
+  }
+  select.seed-select:focus { border-color: #38bdf8; }
+  .seed-hints {
+    display: flex; gap: 10px; flex-wrap: wrap;
+    background: #1e293b; border: 1px solid #334155; border-radius: 8px;
+    padding: 8px 14px; margin-bottom: 12px; font-size: 0.78rem;
+  }
+  .hint-item { color: #64748b; }
+  .hint-item span { color: #38bdf8; font-weight: 600; }
+
   .next-btn { margin-top: 24px; display: flex; justify-content: flex-end; }
 </style>
 
 <h2>Passo 1 — Construir Grafo de Conhecimento</h2>
 <p class="desc">Cole qualquer documento, artigo ou texto. O PicoFish extrai entidades e constrói um grafo.</p>
+
+{#if seeds.length > 0}
+  <div class="seed-row">
+    <span class="seed-label">Carregar exemplo:</span>
+    <select class="seed-select" bind:value={selectedSeedId} on:change={onSeedChange}>
+      <option value="">— Escolha um cenário de exemplo —</option>
+      {#each seeds as s}
+        <option value={s.id}>{s.name}</option>
+      {/each}
+    </select>
+  </div>
+{/if}
+
+{#if seedHints}
+  <div class="seed-hints">
+    <span class="hint-item">Horas sugeridas: <span>{seedHints.suggestedHours}h</span></span>
+    <span class="hint-item">Agentes sugeridos: <span>~{seedHints.suggestedAgentCount}</span></span>
+    <span class="hint-item" style="color: #475569">← use esses valores nos passos seguintes</span>
+  </div>
+{/if}
 
 <textarea
   bind:value={document}

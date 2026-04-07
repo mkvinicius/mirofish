@@ -92,7 +92,24 @@ func (c *embedCache) set(key string, v []float64) {
 
 // ── HTTP client with exponential backoff retry ────────────────────────────
 
-var httpClient = &http.Client{Timeout: 180 * time.Second}
+// httpClient has no client-level timeout; per-call timeouts are applied via context.
+var httpClient = &http.Client{Timeout: 0}
+
+// callTimeout returns the configured LLM timeout (default 30s).
+func callTimeout() time.Duration {
+	if config.Global != nil && config.Global.LLMTimeoutSec > 0 {
+		return time.Duration(config.Global.LLMTimeoutSec) * time.Second
+	}
+	return 30 * time.Second
+}
+
+// maxRetries returns the configured LLM max retries (default 3).
+func maxRetries() int {
+	if config.Global != nil && config.Global.LLMMaxRetries > 0 {
+		return config.Global.LLMMaxRetries
+	}
+	return 3
+}
 
 func post(ctx context.Context, path string, body interface{}) ([]byte, error) {
 	b, err := json.Marshal(body)
@@ -100,9 +117,14 @@ func post(ctx context.Context, path string, body interface{}) ([]byte, error) {
 		return nil, err
 	}
 
-	delays := []time.Duration{0, 2 * time.Second, 4 * time.Second, 8 * time.Second}
-	var lastErr error
+	retries := maxRetries()
+	delays := make([]time.Duration, retries+1)
+	delays[0] = 0
+	for i := 1; i <= retries; i++ {
+		delays[i] = time.Duration(1<<uint(i-1)) * time.Second // 1s, 2s, 4s, ...
+	}
 
+	var lastErr error
 	for attempt, delay := range delays {
 		if delay > 0 {
 			select {
@@ -111,7 +133,12 @@ func post(ctx context.Context, path string, body interface{}) ([]byte, error) {
 			case <-time.After(delay):
 			}
 		}
-		data, err := doPost(ctx, path, b)
+
+		// Apply per-call timeout
+		callCtx, callCancel := context.WithTimeout(ctx, callTimeout())
+		data, err := doPost(callCtx, path, b)
+		callCancel()
+
 		if err == nil {
 			return data, nil
 		}

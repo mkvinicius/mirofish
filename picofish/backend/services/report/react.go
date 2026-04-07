@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"picofish/config"
 	"picofish/services/agents"
 	"picofish/services/graph"
 	"picofish/services/llm"
@@ -20,12 +21,14 @@ import (
 // ── Status types ───────────────────────────────────────────────────────────
 
 type Status struct {
-	ProjectID string   `json:"project_id"`
-	ReportID  string   `json:"report_id"`
-	Status    string   `json:"status"`
-	Outline   *Outline `json:"outline,omitempty"`
-	Content   string   `json:"content,omitempty"`
-	Error     string   `json:"error,omitempty"`
+	ProjectID   string   `json:"project_id"`
+	ReportID    string   `json:"report_id"`
+	Status      string   `json:"status"`
+	Outline     *Outline `json:"outline,omitempty"`
+	Content     string   `json:"content,omitempty"`
+	Error       string   `json:"error,omitempty"`
+	Progress    []string `json:"progress,omitempty"`    // live progress log
+	CurrentStep string   `json:"current_step,omitempty"` // e.g. "Writing: Timeline..."
 }
 
 type Outline struct {
@@ -95,6 +98,13 @@ func (s *statusStore) watch(key string) (chan struct{}, func()) {
 // The caller must call the returned cancel func when done.
 func Subscribe(projectID string) (chan struct{}, func()) {
 	return statuses.watch(projectID)
+}
+
+// emit appends a progress message to the status and notifies SSE watchers.
+func emit(projectID, msg string, status *Status) {
+	status.Progress = append(status.Progress, msg)
+	status.CurrentStep = msg
+	statuses.set(projectID, status)
 }
 
 // ── Entry point ────────────────────────────────────────────────────────────
@@ -213,6 +223,11 @@ func runReACT(ctx context.Context, projectID, simRequirement, reportID string, s
 	}
 
 	// Plan
+	totalActionCount := 0
+	if v, ok := actionSummary["total"].(int); ok {
+		totalActionCount = v
+	}
+	emit(projectID, fmt.Sprintf("📋 Planning report for %d entities, %d actions...", len(nodes), totalActionCount), status)
 	status.Status = "planning"
 	planUser := fmt.Sprintf(`Scenario: %s
 Graph: %d entities | %d relationships | types: %s
@@ -238,7 +253,7 @@ Sample simulation facts:
 	}
 	status.Outline = &outline
 	status.Status = "generating"
-	statuses.set(projectID, status) // notify SSE watchers: outline ready
+	emit(projectID, fmt.Sprintf("📑 Outline ready: %d sections — %s", len(outline.Sections), outline.Title), status)
 	_ = storage.DB.Update("reports", reportID, storage.Record{"status": "generating"})
 
 	// Generate sections
@@ -247,7 +262,8 @@ Sample simulation facts:
 		outline.Title, outline.Summary,
 		time.Now().Format("2006-01-02 15:04"), simRequirement))
 
-	for _, section := range outline.Sections {
+	for i, section := range outline.Sections {
+		emit(projectID, fmt.Sprintf("✍️ Writing section %d/%d: %s", i+1, len(outline.Sections), section.Title), status)
 		content, err := generateSection(ctx, projectID, section, outline, simRequirement, actions)
 		if err != nil {
 			content = fmt.Sprintf("*Error: %v*", err)
@@ -256,6 +272,7 @@ Sample simulation facts:
 	}
 
 	// Conclusion
+	emit(projectID, "📝 Writing conclusion...", status)
 	conclusion, err := llm.Chat(ctx,
 		[]llm.Message{llm.User(fmt.Sprintf(
 			"Write a 2-3 paragraph conclusion for this Future Prediction Report. Summarize key predictions, highlight risks/opportunities, and advise stakeholders.\n\nReport:\n%s",
@@ -268,10 +285,19 @@ Sample simulation facts:
 	draft := buf.String()
 
 	// Ensure all mandatory sections are present
+	emit(projectID, "🔍 Checking mandatory sections...", status)
 	draft = ensureMandatorySections(ctx, projectID, draft, simRequirement, actions)
 
-	// Self-critique loop: 2 iterations of editorial review
+	// Self-critique loop
+	critiqueIters := 2
+	if config.Global != nil && config.Global.ReportCritiqueIterations > 0 {
+		critiqueIters = config.Global.ReportCritiqueIterations
+	}
+	for i := 0; i < critiqueIters; i++ {
+		emit(projectID, fmt.Sprintf("🔄 Self-critique pass %d/%d...", i+1, critiqueIters), status)
+	}
 	draft = selfCritiqueLoop(ctx, draft)
+	emit(projectID, "✅ Report complete!", status)
 
 	return draft, nil
 }

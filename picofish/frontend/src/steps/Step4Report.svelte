@@ -8,6 +8,7 @@
   let error = ''
   let scenarioInput = $simRequirement || ''
   let eventSource = null
+  let showProgress = true
 
   onMount(async () => {
     status = await api.getReport($currentProject.id).catch(() => null)
@@ -176,6 +177,25 @@
   :global(.report-body li) { margin-bottom: 4px; }
 
   .next-btn { margin-top: 24px; display: flex; justify-content: flex-end; }
+
+  .progress-log {
+    background: #0f172a; border: 1px solid #334155; border-radius: 10px;
+    margin: 14px 0; overflow: hidden;
+  }
+  .progress-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 14px; cursor: pointer; border-bottom: 1px solid #334155;
+  }
+  .progress-header:hover { background: #1e293b; }
+  .progress-title { font-size: 0.8rem; color: #64748b; font-weight: 600; }
+  .progress-entries { padding: 10px 14px; max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+  .progress-entry { font-size: 0.78rem; color: #94a3b8; line-height: 1.4; }
+  .progress-entry.last { color: #38bdf8; }
+
+  .step-badge {
+    font-size: 0.72rem; padding: 1px 8px; border-radius: 10px;
+    background: #1e293b; color: #64748b; margin-left: 8px;
+  }
 </style>
 
 <h2>Passo 4 — Gerar Relatório</h2>
@@ -191,13 +211,46 @@
 {:else if status.status === 'planning'}
   <div class="btn-row">
     <span class="status-pill planning"><span class="spinner"></span> Planejando estrutura...</span>
+    {#if status.current_step}<span class="step-badge">{status.current_step}</span>{/if}
   </div>
-  <p style="color: #64748b; font-size: 0.85rem; margin-top: 12px">Analisando cenário e estruturando as seções do relatório.</p>
+  {#if status.progress?.length > 0}
+    <div class="progress-log">
+      <div class="progress-header" on:click={() => showProgress = !showProgress}>
+        <span class="progress-title">📋 Log ({status.progress.length})</span>
+        <span style="font-size: 0.75rem; color: #475569">{showProgress ? '▲' : '▼'}</span>
+      </div>
+      {#if showProgress}
+        <div class="progress-entries">
+          {#each status.progress as entry, i}
+            <div class="progress-entry" class:last={i === status.progress.length - 1}>{entry}</div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+  {:else}
+    <p style="color: #64748b; font-size: 0.85rem; margin-top: 12px">Analisando cenário e estruturando as seções do relatório.</p>
+  {/if}
 
 {:else if status.status === 'generating'}
   <div class="btn-row">
     <span class="status-pill generating"><span class="spinner"></span> Gerando...</span>
+    {#if status.current_step}<span class="step-badge">{status.current_step}</span>{/if}
   </div>
+  {#if status.progress?.length > 0}
+    <div class="progress-log">
+      <div class="progress-header" on:click={() => showProgress = !showProgress}>
+        <span class="progress-title">📋 Log ({status.progress.length})</span>
+        <span style="font-size: 0.75rem; color: #475569">{showProgress ? '▲' : '▼'}</span>
+      </div>
+      {#if showProgress}
+        <div class="progress-entries">
+          {#each status.progress as entry, i}
+            <div class="progress-entry" class:last={i === status.progress.length - 1}>{entry}</div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+  {/if}
   {#if status.outline}
     <div class="outline">
       <div class="outline-title">{status.outline.title}</div>
@@ -208,7 +261,9 @@
       </ul>
     </div>
   {/if}
-  <p style="color: #64748b; font-size: 0.85rem">Agente ReACT coletando evidências — atualizações em tempo real.</p>
+  {#if !status.progress?.length}
+    <p style="color: #64748b; font-size: 0.85rem">Agente ReACT coletando evidências — atualizações em tempo real.</p>
+  {/if}
 
 {:else if status.status === 'completed'}
   <div class="btn-row">
@@ -216,6 +271,21 @@
     <button class="secondary" on:click={generate}>Regenerar</button>
     <button class="export" on:click={exportReport}>↓ Exportar .md</button>
   </div>
+  {#if status.progress?.length > 0}
+    <div class="progress-log">
+      <div class="progress-header" on:click={() => showProgress = !showProgress}>
+        <span class="progress-title">📋 Log de geração ({status.progress.length} passos)</span>
+        <span style="font-size: 0.75rem; color: #475569">{showProgress ? '▲' : '▼'}</span>
+      </div>
+      {#if showProgress}
+        <div class="progress-entries">
+          {#each status.progress as entry}
+            <div class="progress-entry">{entry}</div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+  {/if}
   <div class="report-body">{@html renderMarkdown(status.content)}</div>
 
   <!-- Phase 2: Prediction Tracker -->
