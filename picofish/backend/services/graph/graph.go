@@ -440,6 +440,182 @@ func SemanticSearch(projectID string, queryEmb []float64, topK int) ([]Node, []E
 	return topNodes, topEdges
 }
 
+// ── GraphRAG traversal ─────────────────────────────────────────────────────
+
+// HopTraversal follows all edges (both directions) from startNodeIDs up to
+// N hops away. Returns a deduplicated list of all reachable nodes.
+func HopTraversal(projectID string, startNodeIDs []string, hops int) []Node {
+	allNodes, _ := GetNodes(projectID, nil)
+	allEdges, _ := GetEdges(projectID)
+
+	nodeMap := make(map[string]Node, len(allNodes))
+	for _, n := range allNodes {
+		nodeMap[n.ID] = n
+	}
+
+	// Build undirected adjacency list
+	adj := make(map[string][]string)
+	for _, e := range allEdges {
+		if e.SourceID != "" && e.TargetID != "" {
+			adj[e.SourceID] = append(adj[e.SourceID], e.TargetID)
+			adj[e.TargetID] = append(adj[e.TargetID], e.SourceID)
+		}
+	}
+
+	visited := make(map[string]bool, len(startNodeIDs))
+	frontier := make([]string, 0, len(startNodeIDs))
+	for _, id := range startNodeIDs {
+		if _, ok := nodeMap[id]; ok {
+			visited[id] = true
+			frontier = append(frontier, id)
+		}
+	}
+
+	for hop := 0; hop < hops && len(frontier) > 0; hop++ {
+		var next []string
+		for _, id := range frontier {
+			for _, nbr := range adj[id] {
+				if !visited[nbr] {
+					visited[nbr] = true
+					next = append(next, nbr)
+				}
+			}
+		}
+		frontier = next
+	}
+
+	result := make([]Node, 0, len(visited))
+	for id := range visited {
+		if n, ok := nodeMap[id]; ok {
+			result = append(result, n)
+		}
+	}
+	return result
+}
+
+// SemanticGraphSearch finds topK nodes by cosine similarity, expands via
+// hop traversal, then re-ranks the expanded set by:
+// 0.6 * semantic_score + 0.4 * hop_distance_score
+//
+// Hop distance scores: seed nodes = 1.0, each hop reduces by 0.3 (min 0.1).
+func SemanticGraphSearch(ctx context.Context, projectID, query string, topK, hops int) []Node {
+	queryEmb, err := llm.Embed(ctx, query)
+	if err != nil {
+		// Fallback: return up to topK nodes unranked
+		nodes, _ := GetNodes(projectID, nil)
+		if len(nodes) > topK {
+			return nodes[:topK]
+		}
+		return nodes
+	}
+
+	nodes, _ := GetNodes(projectID, nil)
+	allEdges, _ := GetEdges(projectID)
+
+	// Step 1: score all nodes by cosine similarity
+	type nodeScore struct {
+		node  Node
+		score float64
+	}
+	scored := make([]nodeScore, 0, len(nodes))
+	for _, n := range nodes {
+		if len(n.Embedding) > 0 {
+			scored = append(scored, nodeScore{n, llm.CosineSimilarity(queryEmb, n.Embedding)})
+		}
+	}
+	// Sort descending (insertion sort — small slices)
+	for i := 1; i < len(scored); i++ {
+		for j := i; j > 0 && scored[j].score > scored[j-1].score; j-- {
+			scored[j], scored[j-1] = scored[j-1], scored[j]
+		}
+	}
+	if len(scored) > topK {
+		scored = scored[:topK]
+	}
+
+	// Collect seed IDs and their semantic scores
+	semScores := make(map[string]float64, len(scored))
+	seedIDs := make([]string, 0, len(scored))
+	for _, s := range scored {
+		semScores[s.node.ID] = s.score
+		seedIDs = append(seedIDs, s.node.ID)
+	}
+
+	if hops == 0 {
+		result := make([]Node, len(scored))
+		for i, s := range scored {
+			result[i] = s.node
+		}
+		return result
+	}
+
+	// Step 2: BFS from seeds to compute hop distances
+	adj := make(map[string][]string)
+	for _, e := range allEdges {
+		if e.SourceID != "" && e.TargetID != "" {
+			adj[e.SourceID] = append(adj[e.SourceID], e.TargetID)
+			adj[e.TargetID] = append(adj[e.TargetID], e.SourceID)
+		}
+	}
+	distances := make(map[string]int, len(nodes))
+	for _, id := range seedIDs {
+		distances[id] = 0
+	}
+	frontier := append([]string(nil), seedIDs...)
+	for hop := 1; hop <= hops && len(frontier) > 0; hop++ {
+		var next []string
+		for _, id := range frontier {
+			for _, nbr := range adj[id] {
+				if _, seen := distances[nbr]; !seen {
+					distances[nbr] = hop
+					next = append(next, nbr)
+				}
+			}
+		}
+		frontier = next
+	}
+
+	nodeMap := make(map[string]Node, len(nodes))
+	for _, n := range nodes {
+		nodeMap[n.ID] = n
+	}
+
+	// Step 3: re-rank all reached nodes
+	type finalScore struct {
+		node  Node
+		score float64
+	}
+	finalNodes := make([]finalScore, 0, len(distances))
+	for id, dist := range distances {
+		n, ok := nodeMap[id]
+		if !ok {
+			continue
+		}
+		semScore := semScores[id] // 0 for hop-expanded nodes not in original topK
+		hopScore := 1.0 - float64(dist)*0.3
+		if hopScore < 0.1 {
+			hopScore = 0.1
+		}
+		finalNodes = append(finalNodes, finalScore{n, 0.6*semScore + 0.4*hopScore})
+	}
+	// Sort descending
+	for i := 1; i < len(finalNodes); i++ {
+		for j := i; j > 0 && finalNodes[j].score > finalNodes[j-1].score; j-- {
+			finalNodes[j], finalNodes[j-1] = finalNodes[j-1], finalNodes[j]
+		}
+	}
+	// Return up to topK*3 to give tools rich context
+	maxResults := topK * 3
+	if len(finalNodes) > maxResults {
+		finalNodes = finalNodes[:maxResults]
+	}
+	result := make([]Node, len(finalNodes))
+	for i, f := range finalNodes {
+		result[i] = f.node
+	}
+	return result
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 func parseNodes(records []storage.Record) []Node {

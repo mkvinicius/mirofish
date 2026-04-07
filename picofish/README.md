@@ -29,15 +29,17 @@ The result? Runs on a **Raspberry Pi**.
 |---|---|---|
 | Language | Python | **Go** |
 | Deploy | Docker + multiple containers | **Single binary** |
-| Memory (semantic) | Zep Cloud (paid, remote) | **Local embeddings + cosine similarity** |
+| Memory (semantic) | Zep Cloud (paid, remote) | **Local episodic memory + belief store** |
 | Simulation engine | OASIS (camel-ai) | **Go goroutines** |
-| Knowledge graph | Zep graph + PostgreSQL | **JSON files + vector index** |
+| Knowledge graph | Zep graph + PostgreSQL | **JSON files + GraphRAG hop traversal** |
 | Frontend | Vue 3 | **Svelte** |
 | RAM usage | ~2–4 GB | **~128–256 MB** |
 | Runs on Raspberry Pi | No | **Yes** |
-| Output quality | 100% | **100%** |
-| Report depth | Full ReACT | **Full ReACT (identical)** |
-| Agent fidelity | OASIS-spec | **OASIS-spec (identical)** |
+| Output quality | 100% | **100%+** |
+| Report depth | Full ReACT | **Full ReACT + self-critique loop** |
+| Agent fidelity | OASIS-spec | **OASIS-spec + individual/group types** |
+| Reproducibility | No | **Yes — deterministic seeds** |
+| Graph traversal | GraphRAG multi-hop | **GraphRAG multi-hop (local)** |
 
 ---
 
@@ -47,26 +49,35 @@ The result? Runs on a **Raspberry Pi**.
 Paste any document (article, report, scenario). PicoFish uses the LLM to extract entities, relationships, and facts — building a **knowledge graph with vector embeddings** on every node and edge. Temporal edges (ValidAt / InvalidAt / ExpiredAt) track how facts evolve through the simulation, replicating Zep's temporal memory locally.
 
 ### Step 2 — Agent Generation
-Each graph entity becomes a **fully-specified OASIS agent** — with MBTI personality, country, profession, stance, sentiment bias, influence weight, posts-per-hour, active hours, and response delay. Agents distinguish between individual people and abstract group entities, and get tailored prompts for Twitter or Reddit behavior.
+Each graph entity becomes a **fully-specified OASIS agent** with two types:
+
+- **Individual agents**: human personas with MBTI, emotional reasoning, 1–3 posts/hour, full episodic memory, belief decay, FOLLOW/UNFOLLOW actions
+- **Group agents**: institutional entities (media, governments, companies) — rational posting, 3–8 posts/hour, 2.5× feed influence multiplier, simplified memory, no following
+
+Detection is automatic: entities with >3 graph relationships or institutional name keywords become group agents.
 
 ### Step 3 — Simulation
-Agents interact on simulated **Twitter and/or Reddit** across configurable hours of simulated time. The engine replicates OASIS exactly:
-- **Feed algorithm**: recency decay × popularity × echo chamber boost
-- **China timezone scheduling**: hour-by-hour activity multipliers (0.05 dead hours → 1.5 evening peak)
-- **Per-agent semantic memory**: each agent remembers their past actions via embeddings
-- **All action types**: CREATE_POST, LIKE, REPOST, REPLY, FOLLOW, COMMENT, UPVOTE, DOWNVOTE, SHARE, COLLECT
+Agents interact across **6 platforms** (X/Twitter, Reddit, Instagram, TikTok, WhatsApp, Facebook) with calibrated parameters:
+
+- **Feed algorithm**: `exp(-0.15 × hours)` recency decay · `log(1 + likes + reposts) × 0.3` popularity · stance-based echo chamber (1.8× boost for same stance, 0.4× suppression for opposite)
+- **Calibrated scheduling**: hour-by-hour multipliers (0.02 dead hours skipped entirely → 1.5 evening peak)
+- **Episodic memory**: each agent maintains `EpisodicEvent` history with embeddings, `BeliefStore` per topic, and belief revision on contradiction (cosine similarity < 0.3)
+- **Deterministic seeds**: pass a seed to `Start()` for reproducible simulation output
+- **All action types**: CREATE_POST, LIKE, REPOST, REPLY, FOLLOW, COMMENT, UPVOTE, DOWNVOTE, SHARE, STORY, REEL, CREATE_VIDEO, SEND_MESSAGE, FORWARD, REACT, JOIN_GROUP
 
 ### Step 4 — Future Prediction Report
-A **ReACT agent** analyzes the simulation with a god's-eye view — seeing everything, knowing everything — and generates a structured Future Prediction Report. It uses 4 specialized tools:
+A **ReACT agent** analyzes the simulation and generates a structured Future Prediction Report with a 2-iteration **self-critique loop**. Uses 4 specialized tools with GraphRAG expansion:
 
-| Tool | Purpose |
-|---|---|
-| **InsightForge** | Deep multi-dimensional semantic analysis — generates sub-queries, searches across all dimensions, aggregates insights |
-| **PanoramaSearch** | Full graph overview — all active facts, all historical temporal edges, complete entity landscape |
-| **QuickSearch** | Fast semantic lookup for a specific question |
-| **InterviewAgents** | Selects relevant agents by semantic similarity and interviews each in-character |
+| Tool | Hop depth | Purpose |
+|---|---|---|
+| **InsightForge** | 2 hops | Deep multi-dimensional semantic analysis with sub-query decomposition |
+| **PanoramaSearch** | 3 hops | Full graph overview — ranked by semantic relevance, temporal tracking |
+| **QuickSearch** | 1 hop | Fast focused lookup |
+| **InterviewAgents** | — | Selects agents by semantic similarity, interviews each in-character |
 
-The agent calls 3–5 tools per section, quotes agent dialogue directly, and writes in prediction voice.
+**Mandatory sections guaranteed**: Timeline of Key Events · Key Actors & Influence Scores · Prediction Confidence · Divergence Points
+
+The self-critique loop reviews the draft twice: adding confidence scores, removing unsupported conclusions, and ensuring all key actors appear.
 
 ### Step 5 — Deep Interaction
 Interactive Q&A with the simulation analyst. Full context: knowledge graph, all agent behaviors, simulation actions, and report findings.
@@ -157,15 +168,38 @@ picofish/
 │   ├── config/          # env config
 │   ├── storage/         # JSON file store (no external DB)
 │   ├── api/             # net/http router + handlers
+│   ├── tests/           # unit tests + benchmarks
 │   └── services/
 │       ├── llm/         # OpenAI-compat client + embeddings + cosine similarity
-│       ├── graph/       # knowledge graph + temporal edges + 4 ReACT tools
-│       ├── agents/      # OasisAgentProfile + simulation engine
-│       └── report/      # ReACT report generation + chat
+│       ├── graph/       # knowledge graph + GraphRAG hop traversal + 4 ReACT tools
+│       ├── agents/      # OasisAgentProfile + memory.go + simulation engine
+│       └── report/      # ReACT report + self-critique loop + chat
 └── frontend/            # Svelte + Vite, 5-step UI
 ```
 
 **External dependencies**: only `github.com/google/uuid` and `github.com/joho/godotenv`. Everything else is Go standard library.
+
+---
+
+## Testing
+
+```bash
+cd backend
+go test ./tests/... -v          # run all unit tests
+go test ./tests/... -bench=.    # run benchmarks
+```
+
+Tests run without an LLM — pure unit tests covering belief decay, hop traversal, echo chamber logic, agent type detection, and mandatory report sections.
+
+| Test | What it verifies |
+|---|---|
+| `TestBeliefDecay` | Belief strength decays 0.05/hour, reaches < 0.05 after 20 hours |
+| `TestGraphHopTraversal` | BFS hop traversal returns correct neighbor sets |
+| `TestHopTraversalBidirectional` | Edges followed in both directions |
+| `TestEchoChamberEffect` | Opposite stance detection drives feed suppression |
+| `TestDeterministicOutput` | Hour multipliers match spec (dead hours < 0.1, peak ≥ 1.0) |
+| `TestAgentTypeDetection` | Group entity keywords classified correctly |
+| `TestReportHasMandatorySections` | All 4 required sections present |
 
 ---
 

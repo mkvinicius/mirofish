@@ -52,6 +52,11 @@ type OasisAgentProfile struct {
 	ResponseDelayMax int      `json:"response_delay_max"`
 	Platform         string   `json:"platform"` // twitter|reddit|both
 
+	// Agent type: "individual" | "group"
+	// Groups are institutional entities (media, companies, governments).
+	// Individuals are specific people or persona representatives.
+	AgentType string `json:"agent_type"`
+
 	// Source entity
 	SourceEntityID   string `json:"source_entity_id"`
 	SourceEntityType string `json:"source_entity_type"`
@@ -189,7 +194,13 @@ func generateSingleProfile(ctx context.Context, projectID string, node graph.Nod
 		edgeContext = "\nRelated facts from the knowledge graph:\n- " + strings.Join(edgeFacts[:min(5, len(edgeFacts))], "\n- ")
 	}
 
-	isGroup := isAbstractGroup(node.Type)
+	// Detect agent type before generating profile
+	agentType := "individual"
+	if isGroupAgent(node, edges) {
+		agentType = "group"
+	}
+
+	isGroup := agentType == "group"
 
 	var prompt string
 	if isGroup {
@@ -320,6 +331,16 @@ Be creative — avoid generic profiles. Each agent should feel like a real, dist
 		platform = "reddit"
 	}
 
+	// Enforce PostsPerHour range per agent type:
+	// individual: 1-3 posts/hour (personal pace)
+	// group: 3-8 posts/hour (institutional volume)
+	postsPerHour := clampF(raw.PostsPerHour, 0.1, 8.0)
+	if agentType == "individual" {
+		postsPerHour = clampF(postsPerHour, 0.1, 3.0)
+	} else {
+		postsPerHour = clampF(postsPerHour, 3.0, 8.0)
+	}
+
 	return &OasisAgentProfile{
 		UserID:           userID,
 		UserName:         sanitizeUsername(raw.UserName, node.Name),
@@ -337,7 +358,7 @@ Be creative — avoid generic profiles. Each agent should feel like a real, dist
 		Profession:       orDefault(raw.Profession, node.Type),
 		InterestedTopics: raw.InterestedTopics,
 		ActivityLevel:    clamp(raw.ActivityLevel, 0.1, 1.0),
-		PostsPerHour:     clampF(raw.PostsPerHour, 0.1, 5.0),
+		PostsPerHour:     postsPerHour,
 		CommentsPerHour:  clampF(raw.CommentsPerHour, 0.1, 8.0),
 		ActiveHours:      defaultActiveHours(),
 		SentimentBias:    clamp(raw.SentimentBias, -1, 1),
@@ -346,6 +367,7 @@ Be creative — avoid generic profiles. Each agent should feel like a real, dist
 		ResponseDelayMin: orDefaultInt(raw.ResponseDelayMin, 10),
 		ResponseDelayMax: orDefaultInt(raw.ResponseDelayMax, 60),
 		Platform:         platform,
+		AgentType:        agentType,
 		SourceEntityID:   node.ID,
 		SourceEntityType: node.Type,
 		ProjectID:        projectID,
@@ -399,6 +421,28 @@ func isAbstractGroup(entityType string) bool {
 	return false
 }
 
+// isGroupAgent returns true if the entity should be classified as a group/institution.
+// Detection rule: >3 graph relationships, or name/type contains institutional keywords.
+func isGroupAgent(node graph.Node, edges []graph.Edge) bool {
+	if isAbstractGroup(node.Type) {
+		return true
+	}
+	// Check name for institutional keywords
+	groupKeywords := []string{
+		"government", "ministry", "media", "company", "organization",
+		"party", "association", "institute", "agency", "department",
+		"corporation", "foundation", "union", "federation", "council",
+	}
+	name := strings.ToLower(node.Name)
+	for _, kw := range groupKeywords {
+		if strings.Contains(name, kw) {
+			return true
+		}
+	}
+	// High relationship count indicates institutional entity
+	return len(edges) > 3
+}
+
 func sanitizeUsername(raw, fallback string) string {
 	username := strings.ReplaceAll(raw, " ", "_")
 	username = strings.ReplaceAll(username, "-", "_")
@@ -417,6 +461,14 @@ func defaultActiveHours() []int {
 }
 
 func fallbackProfile(projectID string, node graph.Node, userID int) *OasisAgentProfile {
+	agentType := "individual"
+	if isAbstractGroup(node.Type) {
+		agentType = "group"
+	}
+	postsPerHour := 1.0
+	if agentType == "group" {
+		postsPerHour = 3.0
+	}
 	return &OasisAgentProfile{
 		UserID:           userID,
 		UserName:         sanitizeUsername("", node.Name),
@@ -430,7 +482,7 @@ func fallbackProfile(projectID string, node graph.Node, userID int) *OasisAgentP
 		Age:              30,
 		Profession:       node.Type,
 		ActivityLevel:    0.5,
-		PostsPerHour:     1.0,
+		PostsPerHour:     postsPerHour,
 		CommentsPerHour:  2.0,
 		ActiveHours:      defaultActiveHours(),
 		SentimentBias:    0,
@@ -439,6 +491,7 @@ func fallbackProfile(projectID string, node graph.Node, userID int) *OasisAgentP
 		ResponseDelayMin: 10,
 		ResponseDelayMax: 60,
 		Platform:         "both",
+		AgentType:        agentType,
 		SourceEntityID:   node.ID,
 		SourceEntityType: node.Type,
 		ProjectID:        projectID,

@@ -265,7 +265,114 @@ Sample simulation facts:
 		buf.WriteString("## Conclusion\n\n" + conclusion)
 	}
 
-	return buf.String(), nil
+	draft := buf.String()
+
+	// Ensure all mandatory sections are present
+	draft = ensureMandatorySections(ctx, projectID, draft, simRequirement, actions)
+
+	// Self-critique loop: 2 iterations of editorial review
+	draft = selfCritiqueLoop(ctx, draft)
+
+	return draft, nil
+}
+
+// selfCritiqueLoop sends the draft report to the LLM for editorial review.
+// Runs up to 2 iterations to improve evidence support and prediction confidence.
+func selfCritiqueLoop(ctx context.Context, draft string) string {
+	critiqueSystem := `You are a critical editor reviewing a Future Prediction Report. Improve it by:
+1) Adding confidence scores (High/Medium/Low) to any predictions that lack them
+2) Flagging and removing conclusions not supported by simulation evidence
+3) Ensuring all key actors mentioned in the simulation appear in the report
+4) Making predictions more specific and falsifiable
+
+Return ONLY the improved report text. No commentary, no explanations.`
+
+	for i := 0; i < 2; i++ {
+		improved, err := llm.Chat(ctx,
+			[]llm.Message{
+				llm.System(critiqueSystem),
+				llm.User(trunc(draft, 6000)),
+			},
+			llm.WithTemperature(0.3), llm.WithMaxTokens(4096))
+		if err != nil || len(improved) < len(draft)/2 {
+			// Don't replace with something clearly shorter/broken
+			break
+		}
+		draft = improved
+	}
+	return draft
+}
+
+// ensureMandatorySections appends any missing mandatory sections to the report.
+func ensureMandatorySections(ctx context.Context, projectID, draft, simRequirement string, actions []*agents.AgentAction) string {
+	type mandatorySection struct {
+		header  string
+		prompt  string
+		tool    string
+	}
+	mandatory := []mandatorySection{
+		{
+			header: "## Timeline of Key Events",
+			prompt: "Write a chronological Timeline of Key Events from this simulation. List the most significant moments in order, with simulated hour and description.",
+			tool:   "PanoramaSearch",
+		},
+		{
+			header: "## Key Actors & Influence Scores",
+			prompt: "List the top 5 most influential agents in this simulation. For each: name, role, stance, and an estimated influence score (1-10) with brief reasoning.",
+			tool:   "PanoramaSearch",
+		},
+		{
+			header: "## Prediction Confidence",
+			prompt: "Rate the confidence of the main predictions in this report: High (strong simulation evidence), Medium (partial evidence), or Low (extrapolation). Justify each rating.",
+			tool:   "InsightForge",
+		},
+		{
+			header: "## Divergence Points",
+			prompt: "Identify 2-3 divergence points: moments in the simulation where a different agent action could have led to a substantially different outcome. Explain each briefly.",
+			tool:   "QuickSearch",
+		},
+	}
+
+	for _, ms := range mandatory {
+		if strings.Contains(draft, ms.header) {
+			continue
+		}
+		// Generate section content using the required tool first
+		toolResult := ""
+		if ms.tool != "" {
+			r, err := executeTool(ctx, projectID, ms.tool, ms.prompt, simRequirement)
+			if err == nil {
+				toolResult = trunc(r, 2000)
+			}
+		}
+		contextStr := ""
+		if toolResult != "" {
+			contextStr = "\n\nResearch findings:\n" + toolResult
+		}
+		content, err := llm.Chat(ctx,
+			[]llm.Message{llm.User(ms.prompt + contextStr)},
+			llm.WithTemperature(0.5), llm.WithMaxTokens(800))
+		if err != nil {
+			content = "*Section could not be generated.*"
+		}
+		draft += "\n\n" + ms.header + "\n\n" + content
+	}
+	return draft
+}
+
+// requiredToolForSection returns the tool that must be called before writing this section.
+func requiredToolForSection(title string) string {
+	t := strings.ToLower(title)
+	switch {
+	case strings.Contains(t, "conclusion") || strings.Contains(t, "summary") || strings.Contains(t, "trend") || strings.Contains(t, "risk"):
+		return "InsightForge"
+	case strings.Contains(t, "actor") || strings.Contains(t, "influence") || strings.Contains(t, "agent") || strings.Contains(t, "behavior"):
+		return "PanoramaSearch"
+	case strings.Contains(t, "interview") || strings.Contains(t, "quote") || strings.Contains(t, "perspective"):
+		return "InterviewAgents"
+	default:
+		return "" // no mandatory tool
+	}
 }
 
 func generateSection(ctx context.Context, projectID string, section Section,
@@ -285,6 +392,18 @@ Start with what information you need, then use tools.`,
 		section.Title, section.Description, actionCtx)
 
 	messages := []llm.Message{llm.System(system), llm.User(initial)}
+
+	// Enforce mandatory tool call before the ReACT loop
+	if reqTool := requiredToolForSection(section.Title); reqTool != "" {
+		toolResult, err := executeTool(ctx, projectID, reqTool, section.Description, simRequirement)
+		if err == nil {
+			messages = append(messages,
+				llm.Assistant(fmt.Sprintf(`{"thinking":"Pre-loading required context","tool":%q,"tool_input":%q,"continue":true}`,
+					reqTool, section.Description)),
+				llm.User("Tool result:\n\n"+trunc(toolResult, 3000)+"\n\nContinue with the section."),
+			)
+		}
+	}
 
 	for i := 0; i < 5; i++ {
 		resp, err := llm.Chat(ctx, messages,

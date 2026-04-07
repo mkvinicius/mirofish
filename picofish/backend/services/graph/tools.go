@@ -91,29 +91,25 @@ func InsightForge(ctx context.Context, projectID, query, simRequirement string) 
 
 	seen := make(map[string]bool)
 
-	// Step 2: Search for each sub-query
+	// Step 2: Search for each sub-query using GraphRAG (hops=2 for deep context)
 	for _, sq := range subQueries {
-		emb, err := llm.Embed(ctx, sq)
-		if err != nil {
-			continue
-		}
-		topNodes, topEdges := SemanticSearch(projectID, emb, 5)
+		topNodes := SemanticGraphSearch(ctx, projectID, sq, 5, 2)
 
-		for _, e := range topEdges {
-			if !seen[e.Fact] && e.Fact != "" {
-				result.SemanticFacts = append(result.SemanticFacts, e.Fact)
-				seen[e.Fact] = true
-			}
-		}
 		for _, n := range topNodes {
+			// Collect facts from all edges of this node (active + historical)
+			edges, _ := GetNodeEdges(n.ID)
+			for _, e := range edges {
+				if !seen[e.Fact] && e.Fact != "" {
+					result.SemanticFacts = append(result.SemanticFacts, e.Fact)
+					seen[e.Fact] = true
+				}
+			}
 			if !seen[n.Name] {
 				insight := EntityInsight{
 					Name:    n.Name,
 					Type:    n.Type,
 					Summary: n.Summary,
 				}
-				// Get related facts for this entity
-				edges, _ := GetNodeEdges(n.ID)
 				for _, e := range edges {
 					if e.IsActive() {
 						insight.RelatedFacts = append(insight.RelatedFacts, e.Fact)
@@ -214,14 +210,21 @@ func (r *PanoramaResult) ToText() string {
 }
 
 // PanoramaSearch returns the full graph overview with temporal tracking.
+// Uses SemanticGraphSearch with hops=3 to order results by relevance.
 func PanoramaSearch(ctx context.Context, projectID, query string) (*PanoramaResult, error) {
-	nodes, _ := GetNodes(projectID, nil)
 	edges, _ := GetEdges(projectID)
+
+	// Use SemanticGraphSearch (hops=3) for broader context, semantically ranked
+	rankedNodes := SemanticGraphSearch(ctx, projectID, query, 20, 3)
+	// Fall back to all nodes if semantic search yields nothing
+	if len(rankedNodes) == 0 {
+		rankedNodes, _ = GetNodes(projectID, nil)
+	}
 
 	result := &PanoramaResult{
 		Query:      query,
-		AllNodes:   nodes,
-		TotalNodes: len(nodes),
+		AllNodes:   rankedNodes,
+		TotalNodes: len(rankedNodes),
 		TotalEdges: len(edges),
 	}
 
@@ -255,22 +258,27 @@ func (r *QuickSearchResult) ToText() string {
 	return sb.String()
 }
 
-// QuickSearch performs a fast single-query semantic lookup.
+// QuickSearch performs a fast single-query semantic lookup with 1-hop expansion.
 func QuickSearch(ctx context.Context, projectID, query string) (*QuickSearchResult, error) {
-	emb, err := llm.Embed(ctx, query)
-	if err != nil {
-		// Fallback: keyword search
+	// Use SemanticGraphSearch with hops=1 for fast, focused results
+	topNodes := SemanticGraphSearch(ctx, projectID, query, 10, 1)
+	if len(topNodes) == 0 {
 		return quickSearchKeyword(projectID, query), nil
 	}
-	_, topEdges := SemanticSearch(projectID, emb, 10)
 
 	result := &QuickSearchResult{Query: query}
 	seen := make(map[string]bool)
-	for _, e := range topEdges {
-		if !seen[e.Fact] && e.Fact != "" {
-			result.Facts = append(result.Facts, e.Fact)
-			seen[e.Fact] = true
+	for _, n := range topNodes {
+		edges, _ := GetNodeEdges(n.ID)
+		for _, e := range edges {
+			if !seen[e.Fact] && e.Fact != "" {
+				result.Facts = append(result.Facts, e.Fact)
+				seen[e.Fact] = true
+			}
 		}
+	}
+	if len(result.Facts) == 0 {
+		return quickSearchKeyword(projectID, query), nil
 	}
 	result.TotalCount = len(result.Facts)
 	return result, nil

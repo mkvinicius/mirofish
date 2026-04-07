@@ -117,17 +117,31 @@ type MemoryEntry struct {
 
 // World is the shared simulation state.
 type World struct {
-	mu      sync.RWMutex
-	posts   map[string]*Post   // id → post
-	follows map[string][]string // agentID → []agentID
-	likes   map[string][]string // postID → []agentID
+	mu           sync.RWMutex
+	posts        map[string]*Post    // id → post
+	follows      map[string][]string // agentID → []agentID
+	likes        map[string][]string // postID → []agentID
+	agentStances map[string]string   // agentID → stance (for echo chamber scoring)
+	agentTypes   map[string]string   // agentID → "individual"|"group"
 }
 
 func newWorld() *World {
 	return &World{
-		posts:   make(map[string]*Post),
-		follows: make(map[string][]string),
-		likes:   make(map[string][]string),
+		posts:        make(map[string]*Post),
+		follows:      make(map[string][]string),
+		likes:        make(map[string][]string),
+		agentStances: make(map[string]string),
+		agentTypes:   make(map[string]string),
+	}
+}
+
+// registerAgents populates stance and type maps for echo chamber scoring.
+func (w *World) registerAgents(profiles []*OasisAgentProfile) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, p := range profiles {
+		w.agentStances[p.ID] = p.Stance
+		w.agentTypes[p.ID] = p.AgentType
 	}
 }
 
@@ -168,7 +182,7 @@ func (w *World) getFeed(agentID, platform string, size int, agent *OasisAgentPro
 		candidates = append(candidates, p)
 	}
 
-	// Score each post
+	// Score each post — calibrated parameters
 	now := time.Now().Unix()
 	followed := make(map[string]bool)
 	for _, f := range w.follows[agentID] {
@@ -176,22 +190,33 @@ func (w *World) getFeed(agentID, platform string, size int, agent *OasisAgentPro
 	}
 
 	for _, p := range candidates {
-		// Recency decay (exponential)
-		ageMin := float64(now-parseTime(p.CreatedAt)) / 60.0
-		recencyScore := math.Exp(-ageMin / 120.0) // half-life 2 hours
+		// Calibrated recency decay: exp(-0.15 * hours_since_post)
+		hoursSincePost := float64(now-parseTime(p.CreatedAt)) / 3600.0
+		recencyScore := math.Exp(-0.15 * hoursSincePost)
 
-		// Popularity
-		popScore := math.Log1p(float64(p.LikeCount+p.RepostCount*2+p.CommentCount)) / 10.0
+		// Logarithmic popularity: log(1 + likes + reposts) * 0.3
+		popScore := math.Log1p(float64(p.LikeCount+p.RepostCount)) * 0.3
 
-		// Echo chamber: boost posts from same-stance agents
+		// Echo chamber: stance-based boosting and suppression
 		chamberBoost := 1.0
 		if agent != nil && p.AuthorID != "" {
-			if isFollowed := followed[p.AuthorID]; isFollowed {
-				chamberBoost = 1.5
+			authorStance := w.agentStances[p.AuthorID]
+			if authorStance != "" {
+				if agent.Stance == authorStance {
+					chamberBoost = 1.8 // same stance: strong algorithmic boost
+				} else if isOppositeStance(agent.Stance, authorStance) {
+					chamberBoost = 0.4 // opposite stance: suppressed
+				}
+			} else if followed[p.AuthorID] {
+				chamberBoost = 1.8 // explicitly followed: boost
 			}
 		}
 
-		// Influence weight boost
+		// Group/institutional agents have 2.5x reach multiplier
+		if w.agentTypes[p.AuthorID] == "group" {
+			chamberBoost *= 2.5
+		}
+
 		p.Score = (recencyScore*0.5 + popScore*0.3 + 0.2) * chamberBoost
 	}
 
@@ -221,6 +246,7 @@ type SimState struct {
 	Platform     string    `json:"platform"` // twitter|reddit|both
 	Topic        string    `json:"topic"`
 	StartedAt    time.Time `json:"started_at"`
+	Seed         int64     `json:"seed,omitempty"` // for reproducibility
 	Error        string    `json:"error,omitempty"`
 }
 
@@ -238,7 +264,8 @@ var Global = &Manager{
 }
 
 // Start launches the simulation for a project.
-func (m *Manager) Start(projectID string, totalHours int, platform, topic string) error {
+// seed is optional: pass a non-zero value for deterministic/reproducible output.
+func (m *Manager) Start(projectID string, totalHours int, platform, topic string, seed ...int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -254,21 +281,29 @@ func (m *Manager) Start(projectID string, totalHours int, platform, topic string
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel[projectID] = cancel
 
+	var rngSeed int64
+	if len(seed) > 0 && seed[0] != 0 {
+		rngSeed = seed[0]
+	} else {
+		rngSeed = time.Now().UnixNano()
+	}
+
 	simID := uuid.NewString()
 	state := &SimState{
-		ProjectID:  projectID,
-		SimID:      simID,
-		Status:     "running",
+		ProjectID:   projectID,
+		SimID:       simID,
+		Status:      "running",
 		TotalRounds: totalHours,
-		TotalHours: totalHours,
-		AgentCount: len(profiles),
-		Platform:   platform,
-		Topic:      topic,
-		StartedAt:  time.Now(),
+		TotalHours:  totalHours,
+		AgentCount:  len(profiles),
+		Platform:    platform,
+		Topic:       topic,
+		StartedAt:   time.Now(),
+		Seed:        rngSeed,
 	}
 	m.states[projectID] = state
 
-	go m.runLoop(ctx, projectID, simID, profiles, totalHours, platform, topic, state)
+	go m.runLoop(ctx, projectID, simID, profiles, totalHours, platform, topic, state, rngSeed)
 	return nil
 }
 
@@ -310,23 +345,34 @@ func (m *Manager) GetState(projectID string) *SimState {
 
 // ── Main simulation loop ───────────────────────────────────────────────────
 
-// China timezone activity multipliers (from MiroFish's simulation_config_generator.py)
+// Calibrated activity multipliers (China timezone base, tuned for long simulations).
+// Dead hour threshold: multiplier < 0.1 → skip agent turns entirely (performance).
 var hourMultiplier = map[int]float64{
-	0: 0.05, 1: 0.05, 2: 0.05, 3: 0.05, 4: 0.05, 5: 0.05, // dead hours
-	6: 0.4, 7: 0.4, 8: 0.4,                                  // morning
-	9: 0.7, 10: 0.7, 11: 0.7, 12: 0.7, 13: 0.7, 14: 0.7,   // work hours
-	15: 0.7, 16: 0.7, 17: 0.7, 18: 0.7,
-	19: 1.5, 20: 1.5, 21: 1.5, 22: 1.5,                     // evening peak
-	23: 0.5,                                                  // night
+	0: 0.05, 1: 0.03, 2: 0.02, 3: 0.02, 4: 0.03, 5: 0.05,
+	6: 0.15, 7: 0.35, 8: 0.60, 9: 0.80, 10: 0.90, 11: 0.95,
+	12: 0.85, 13: 0.75, 14: 0.80, 15: 0.85, 16: 0.90, 17: 0.95,
+	18: 1.00, 19: 1.50, 20: 1.40, 21: 1.20, 22: 0.80, 23: 0.40,
 }
 
+const deadHourThreshold = 0.1 // below this multiplier, skip agent turns
+
 func (m *Manager) runLoop(ctx context.Context, projectID, simID string,
-	profiles []*OasisAgentProfile, totalHours int, platform, topic string, state *SimState) {
+	profiles []*OasisAgentProfile, totalHours int, platform, topic string, state *SimState, seed int64) {
+
+	// Deterministic RNG — reproducible output when same seed is used
+	rng := rand.New(rand.NewSource(seed))
 
 	world := newWorld()
+	world.registerAgents(profiles) // populate stance/type maps for feed scoring
 
 	// Load persistent memories from previous simulations
 	memories := loadOrInitMemories(projectID, profiles)
+
+	// Initialize episodic memory managers (Upgrade 1)
+	memManagers := make(map[string]*AgentMemoryManager, len(profiles))
+	for _, p := range profiles {
+		memManagers[p.ID] = NewAgentMemoryManager(p.ID, projectID)
+	}
 
 	// Build initial social graph: agents with same stance follow each other
 	initSocialGraph(world, profiles)
@@ -346,6 +392,19 @@ func (m *Manager) runLoop(ctx context.Context, projectID, simID string,
 		m.setHour(projectID, hour+1, simHour)
 
 		mult := hourMultiplier[simHour]
+
+		// Dead hour check: skip agent turns entirely for performance
+		if mult < deadHourThreshold {
+			select {
+			case <-ctx.Done():
+				persistMemories(projectID, memories)
+				m.setStatus(projectID, "stopped")
+				return
+			case <-time.After(50 * time.Millisecond):
+			}
+			continue
+		}
+
 		var active []*OasisAgentProfile
 		for _, p := range profiles {
 			isActiveHour := false
@@ -356,12 +415,12 @@ func (m *Manager) runLoop(ctx context.Context, projectID, simID string,
 				}
 			}
 			threshold := p.ActivityLevel * mult
-			if isActiveHour && rand.Float64() < threshold {
+			if isActiveHour && rng.Float64() < threshold {
 				active = append(active, p)
 			}
 		}
 		if len(active) == 0 && len(profiles) > 0 {
-			active = []*OasisAgentProfile{profiles[rand.Intn(len(profiles))]}
+			active = []*OasisAgentProfile{profiles[rng.Intn(len(profiles))]}
 		}
 
 		activePlatform := platform
@@ -387,7 +446,8 @@ func (m *Manager) runLoop(ctx context.Context, projectID, simID string,
 				sem <- struct{}{}
 				defer func() { <-sem }()
 
-				action := m.agentAct(ctx, ag, activePlatform, topic, world, memories[ag.ID], hour, simHour)
+				action := m.agentAct(ctx, ag, activePlatform, topic, world,
+					memories[ag.ID], memManagers[ag.ID], hour, simHour)
 				if action == nil {
 					return
 				}
@@ -548,7 +608,8 @@ func persistMemories(projectID string, memories map[string]*AgentMemory) {
 // agentAct decides an action for one agent using LLM.
 // Replicates OASIS agent decision logic with chain-of-thought reasoning.
 func (m *Manager) agentAct(ctx context.Context, agent *OasisAgentProfile,
-	platform, topic string, world *World, mem *AgentMemory, round, simHour int) *AgentAction {
+	platform, topic string, world *World, mem *AgentMemory, memMgr *AgentMemoryManager,
+	round, simHour int) *AgentAction {
 
 	// Get feed context (recent posts the agent would see) — 8 posts, 200 char truncation
 	feed := world.getFeed(agent.ID, platform, 8, agent)
@@ -599,7 +660,10 @@ func (m *Manager) agentAct(ctx context.Context, agent *OasisAgentProfile,
 	}
 
 	// ── Step 1: Internal monologue (chain-of-thought) ──────────────────────
-	thinkPrompt := fmt.Sprintf(`You are %s (@%s), %s, %s.
+	// Group/institutional agents skip emotional reasoning — they post rationally.
+	var thoughts string
+	if agent.AgentType != "group" {
+		thinkPrompt := fmt.Sprintf(`You are %s (@%s), %s, %s.
 Bio: %s
 MBTI: %s | Stance: %s | Sentiment: %s
 
@@ -618,15 +682,16 @@ Think deeply as this person. Write 2-3 sentences of internal thought:
 - What is on your mind right now, in character?
 
 Respond with ONLY your internal thoughts, in first person, no JSON.`,
-		agent.Name, agent.UserName, agent.Profession, agent.Country,
-		agent.Bio, agent.MBTI, agent.Stance, sentimentLabel(agent.SentimentBias),
-		platform, platformDesc,
-		topic, simHour, memCtx, feedText)
+			agent.Name, agent.UserName, agent.Profession, agent.Country,
+			agent.Bio, agent.MBTI, agent.Stance, sentimentLabel(agent.SentimentBias),
+			platform, platformDesc,
+			topic, simHour, memCtx, feedText)
 
-	thoughts, err := llm.Chat(ctx, []llm.Message{llm.User(thinkPrompt)},
-		llm.WithTemperature(0.85), llm.WithMaxTokens(150))
-	if err != nil {
-		thoughts = ""
+		t, err := llm.Chat(ctx, []llm.Message{llm.User(thinkPrompt)},
+			llm.WithTemperature(0.85), llm.WithMaxTokens(150))
+		if err == nil {
+			thoughts = t
+		}
 	}
 
 	// ── Step 2: Action decision (informed by internal thoughts) ───────────
@@ -649,6 +714,11 @@ Respond with ONLY your internal thoughts, in first person, no JSON.`,
 	default:
 		actionList = "CREATE_POST, LIKE_POST, REPLY_TO_POST, SHARE, DO_NOTHING"
 	}
+	// Group agents cannot follow/unfollow — they don't build personal networks
+	if agent.AgentType == "group" {
+		actionList = strings.ReplaceAll(actionList, ", FOLLOW", "")
+		actionList = strings.ReplaceAll(actionList, "FOLLOW, ", "")
+	}
 
 	stanceMap := map[string]string{
 		"supportive": "You strongly support and advocate for the topic.",
@@ -657,6 +727,10 @@ Respond with ONLY your internal thoughts, in first person, no JSON.`,
 		"observer":   "You mostly observe, occasionally sharing factual information.",
 	}
 	stanceDesc := stanceMap[agent.Stance]
+	// Group agents: override to rational, fact-based communication
+	if agent.AgentType == "group" {
+		stanceDesc = "You represent an institution/organization. Post factually and professionally. No emotional language."
+	}
 
 	// Determine reply target: pick most relevant post from feed
 	replyTargetText := ""
@@ -795,6 +869,27 @@ Rules:
 			target := feed2[0]
 			world.repost(target.ID)
 			action.TargetID = target.ID
+		}
+	}
+
+	// ── Episodic memory update (Upgrade 1) ─────────────────────────────────
+	if memMgr != nil && action.Content != "" {
+		memMgr.AddEpisode(ctx, action.Content, topic, round, simHour)
+
+		if agent.AgentType == "group" {
+			// Group agents: simplified memory — cap at 10 episodes, no belief decay
+			if len(memMgr.Episodes) > 10 {
+				memMgr.Episodes = memMgr.Episodes[len(memMgr.Episodes)-10:]
+			}
+		} else {
+			// Individual agents: full episodic memory with belief decay and updates
+			memMgr.DecayBeliefs(simHour)
+			// Update beliefs from observed feed posts
+			for _, post := range feed {
+				if post.Content != "" {
+					memMgr.UpdateBelief(ctx, topic, post.Content, 0.5, simHour)
+				}
+			}
 		}
 	}
 
@@ -967,6 +1062,12 @@ func normalizeAction(action, platform string) string {
 		return action
 	}
 	return ActionCreatePost
+}
+
+// isOppositeStance returns true when two stances directly conflict.
+func isOppositeStance(a, b string) bool {
+	return (a == "supportive" && b == "opposing") ||
+		(a == "opposing" && b == "supportive")
 }
 
 func sentimentLabel(bias float64) string {
