@@ -178,6 +178,12 @@
 
   .next-btn { margin-top: 24px; display: flex; justify-content: flex-end; }
 
+  .prediction-section {
+    margin-top: 2rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid #334155;
+  }
+
   .progress-log {
     background: #0f172a; border: 1px solid #334155; border-radius: 10px;
     margin: 14px 0; overflow: hidden;
@@ -309,11 +315,3 @@
   <input bind:value={scenarioInput} placeholder="Descreva o cenário..." />
   <button on:click={generate}>Gerar Relatório</button>
 {/if}
-
-<style>
-  .prediction-section {
-    margin-top: 2rem;
-    padding-top: 1.5rem;
-    border-top: 1px solid #334155;
-  }
-</style>
