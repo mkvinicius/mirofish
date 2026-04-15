@@ -35,7 +35,7 @@
     if (!selectedSeedId) { seedHints = null; return }
     const seed = seeds.find(s => s.id === selectedSeedId)
     if (!seed) return
-    document = seed.text
+    document = seed.seed_text || seed.text || ''
     seedHints = {
       suggestedHours: seed.suggested_hours,
       suggestedAgentCount: seed.suggested_agent_count,
