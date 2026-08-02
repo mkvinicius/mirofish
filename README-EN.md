@@ -83,6 +83,29 @@ Click the image to watch MiroFish's deep prediction of the lost ending based on 
 
 > **Financial Prediction**, **Political News Prediction** and more examples coming soon...
 
+## 🎰 Lottery Engine (fork addition)
+
+This fork adds a second pipeline that applies the parallel-worlds idea to
+Brazilian Caixa lotteries (Lotofácil, Quina, Mega-Sena). Each parallel world is
+a betting hypothesis, and they compete in a walk-forward backtest over the real
+draw history — no world ever sees the draw it is predicting.
+
+It does **not** predict results: draws are independent and uniform, and the
+backtest is there to show that honestly. What it does optimize is prize
+**sharing** (a Poisson model of bet popularity, calibrated on Caixa's published
+revenue and winner counts) and **guaranteed secondary prizes** (wheeling
+systems, certified by exhaustive enumeration of all 3,268,760 possible draws).
+
+Runs entirely locally — no LLM, no Zep, no torch:
+
+```bash
+cd backend && pip install -r requirements-loteria.txt
+export MIROFISH_MODE=loteria && python run.py
+```
+
+UI at `/loteria`, API at `/api/lottery/*`. Full documentation:
+**[docs/LOTERIAS.md](./docs/LOTERIAS.md)**
+
 ## 🔄 Workflow
 
 1. **Graph Building**: Seed extraction & Individual/collective memory injection & GraphRAG construction

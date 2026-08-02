@@ -1,0 +1,32 @@
+# ===========================================
+# MiroFish — dependências do MODO LOTERIA
+# ===========================================
+# Use este arquivo (em vez de requirements.txt) quando a VPS for rodar
+# APENAS o motor de loterias:
+#
+#     export MIROFISH_MODE=loteria
+#     pip install -r requirements-loteria.txt
+#
+# Diferença prática: sem camel-oasis/camel-ai, o que elimina torch,
+# transformers, sentence-transformers e os wheels CUDA da NVIDIA —
+# aproximadamente 6-8 GB de disco e ~3 GB de RAM em execução.
+#
+# Também não são necessárias as chaves LLM_API_KEY e ZEP_API_KEY: o motor
+# de loterias busca os resultados na API da Caixa e faz todo o cálculo
+# localmente.
+# ===========================================
+
+# ============= Framework web =============
+flask>=3.0.0
+flask-cors>=6.0.0
+
+# ============= Motor de loterias =============
+numpy>=1.26.0
+
+# ============= Utilitários =============
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+
+# openai é importado por app/utils/__init__.py mesmo no modo loteria.
+# É um pacote leve (não puxa torch) e mantém o pacote utils intacto.
+openai>=1.0.0

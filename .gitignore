@@ -58,3 +58,7 @@ backend/uploads/
 
 # Docker 数据
 data/
+# Cache de resultados de loteria — versionado de propósito: faz o motor
+# funcionar offline e evita rebaixar a API da Caixa a cada clone.
+!backend/data/
+!backend/data/**

@@ -83,6 +83,27 @@ MiroFish 致力于打造映射现实的群体智能镜像，通过捕捉个体�
 
 > **金融方向推演预测**、**时政要闻推演预测**等示例陆续更新中...
 
+## 🎰 彩票引擎（本 fork 新增）
+
+本 fork 新增了第二条流水线，将"平行世界"的思路应用于巴西 Caixa 彩票
+（Lotofácil、Quina、Mega-Sena）。每个平行世界是一种投注假设，它们在真实
+开奖历史上通过 walk-forward 回测相互竞争——任何世界都无法看到它正在预测的那期开奖。
+
+它**不预测**开奖结果：开奖是独立且均匀的随机事件，回测的存在正是为了如实展示这一点。
+它真正优化的是**奖金分摊**（用 Caixa 公布的销售额与中奖人数校准的泊松回归模型，
+估计哪些号码组合被更多人投注）和**次级奖项的数学保证**（closed system 包号，
+通过穷举全部 3,268,760 种可能开奖来认证）。
+
+完全本地运行——不需要 LLM、Zep 或 torch：
+
+```bash
+cd backend && pip install -r requirements-loteria.txt
+export MIROFISH_MODE=loteria && python run.py
+```
+
+界面在 `/loteria`，API 在 `/api/lottery/*`。完整文档：
+**[docs/LOTERIAS.md](./docs/LOTERIAS.md)**
+
 ## 🔄 工作流程
 
 1. **图谱构建**：现实种子提取 & 个体与群体记忆注入 & GraphRAG构建

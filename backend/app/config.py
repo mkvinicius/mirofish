@@ -19,7 +19,13 @@ else:
 
 class Config:
     """Flask配置类"""
-    
+
+    # Modo de operação:
+    #   'full'    -> MiroFish completo (simulação social OASIS + Zep + loterias)
+    #   'loteria' -> apenas o motor de loterias (não exige LLM/Zep, nem torch)
+    MODE = os.environ.get('MIROFISH_MODE', 'full').strip().lower()
+    LOTTERY_ONLY = MODE in ('loteria', 'lottery')
+
     # Flask配置
     SECRET_KEY = os.environ.get('SECRET_KEY', 'mirofish-secret-key')
     DEBUG = os.environ.get('FLASK_DEBUG', 'True').lower() == 'true'
@@ -63,10 +69,21 @@ class Config:
     REPORT_AGENT_MAX_REFLECTION_ROUNDS = int(os.environ.get('REPORT_AGENT_MAX_REFLECTION_ROUNDS', '2'))
     REPORT_AGENT_TEMPERATURE = float(os.environ.get('REPORT_AGENT_TEMPERATURE', '0.5'))
     
+    # 彩票模块配置
+    LOTTERY_DATA_DIR = os.path.join(os.path.dirname(__file__), '../data')
+    LOTTERY_DEFAULT = os.environ.get('LOTTERY_DEFAULT', 'lotofacil')
+
     @classmethod
     def validate(cls):
-        """验证必要配置"""
+        """验证必要配置
+
+        No modo loteria o motor não usa LLM nem Zep: os dados vêm da API da
+        Caixa e todo o cálculo é local, então exigir essas chaves só impediria
+        o serviço de subir.
+        """
         errors = []
+        if cls.LOTTERY_ONLY:
+            return errors
         if not cls.LLM_API_KEY:
             errors.append("LLM_API_KEY 未配置")
         if not cls.ZEP_API_KEY:
