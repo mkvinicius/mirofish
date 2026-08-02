@@ -261,8 +261,11 @@ Mesmo custo, garantia estritamente melhor — verificado por enumeração dos
   registrado na resposta da API.
 - **Lotomania** não é suportada: C(100,50) é grande demais para enumerar; exigiria
   amostragem em vez de busca exaustiva.
-- **Requisitos por modalidade**: Lotofácil roda em qualquer VPS (~1 GB de pico);
-  Quina usa ~2,5 GB; Mega-Sena ~4 GB. Para rodar as três com folga, 8 GB de RAM.
+- **Requisitos por modalidade** (pico medido num estudo completo com backtest):
+  Lotofácil ~1 GB; Quina ~6,5 GB; Mega-Sena ~11,3 GB. Uma VPS de 16 GB roda
+  qualquer uma delas, mas **não rode dois estudos de Mega/Quina em paralelo**.
+  Tempos no hardware de referência (4 vCPU): Lotofácil ~35 s, Quina ~3,5 min,
+  Mega ~6,5 min.
 - **API nova**: `GET /api/lottery/oportunidades` (EV do próximo concurso de cada
   modalidade), `GET /api/lottery/vies/<slug>` (monitor de viés, cacheado) e o
   modo de carteira `"otimizado"` no `POST /api/lottery/estudo` (parâmetro
