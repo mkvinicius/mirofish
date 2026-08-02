@@ -21,9 +21,12 @@ justamente para mostrar essa realidade em números.
 
 | Alavanca | Como funciona | Ganho |
 |---|---|---|
-| **Anti-popularidade** | Modelo de Poisson calibrado com a arrecadação e o nº de ganhadores publicados pela Caixa, estimando quais perfis de jogo são mais marcados | Não muda a chance de ganhar; muda **quanto se leva**, porque o prêmio é rateado entre os acertadores |
-| **Fechamento** | Cobertura gulosa sobre um conjunto base, com garantia **certificada por enumeração exaustiva** de todos os sorteios possíveis | Converte quase-acertos em prêmios secundários de forma garantida |
+| **Oportunidades (quando apostar)** | Identidade exata do prêmio rateado `EV = P·(1-(1-p)^N)/N` aplicada ao bolo anunciado do próximo concurso de cada modalidade | O único mecanismo com precedente documentado de lucro real (Cash WinFall/MIT): esperar o concurso em que a regra fica favorável |
+| **Anti-popularidade** | Modelo de Poisson calibrado com a arrecadação e o nº de ganhadores publicados pela Caixa, estimando quais perfis de jogo são mais marcados | Não muda a chance de ganhar; muda **quanto se leva**, porque o prêmio é rateado entre os acertadores. Validado fora da amostra (r=0,51 em 665 concursos nunca vistos) |
+| **Carteira otimizada** | Seleção gulosa submodular maximizando P(bilhete ≥ faixa alvo), com desempate anti-popular | +3,5 p.p. em P(≥11) na Lotofácil vs seleção heurística, no mesmo custo (76,4% vs 72,9%) |
+| **Fechamento** | Cobertura gulosa + melhoria local por troca, com garantia **certificada por enumeração exaustiva** | A melhoria local fechou com 20 jogos a garantia que antes exigia 30 (R$ 70 vs R$ 105) |
 | **Backtest walk-forward** | Cada mundo só enxerga concursos anteriores ao alvo | Mostra honestamente quais hipóteses não se sustentam |
+| **Monitor de viés** | Estatística T contra distribuição nula simulada (Monte Carlo) + persistência split-half + vantagem fora da amostra | Detectou viés real na Lotofácil (p=0,0001) — e quantificou que ele é economicamente irrelevante (retorno 41%→44% contra margem de 59%) |
 | **Valor esperado** | Probabilidades hipergeométricas exatas × rateio médio real | Deixa explícito o retorno estrutural (na Lotofácil, ~41%) |
 
 ---
@@ -34,36 +37,54 @@ justamente para mostrar essa realidade em números.
 backend/app/lottery/
 ├── catalog.py         Definição declarativa das modalidades (Lotofácil, Quina, Mega-Sena)
 ├── data_source.py     Cliente da API da Caixa + cache JSONL append-only
-├── combinatorics.py   Núcleo: máscaras de bits, enumeração, popcount e features via LUT
+├── combinatorics.py   Núcleo: máscaras de bits (≤64 dezenas) e índices (>64), popcount, LUTs
 ├── analyzer.py        Estatísticas do histórico (frequência, atraso, Markov, repetição)
 ├── popularity.py      Regressão de Poisson (IRLS) que calibra a popularidade das apostas
 ├── worlds.py          Os mundos paralelos (uma hipótese cada)
-├── wheeling.py        Fechamentos + certificação exata de garantia
+├── portfolio.py       Otimizador de carteira: maximiza P(bilhete ≥ faixa alvo)
+├── wheeling.py        Fechamentos (bits locais ao conjunto base) + certificação exata
 ├── backtest.py        Competição walk-forward + veredito estatístico
 ├── economics.py       Valor esperado e ajuste por rateio
+├── opportunity.py     Caçador de oportunidades: EV do próximo concurso, roll-downs
+├── bias.py            Monitor de viés físico (Monte Carlo)
 └── engine.py          Orquestra as 5 etapas e persiste o estudo
 
 backend/app/api/lottery.py     Rotas HTTP
-backend/data/lotofacil.jsonl   Cache do histórico (3.750 concursos, versionado)
+backend/data/*.jsonl           Cache dos históricos (versionados): lotofacil 3.750,
+                               quina 7.080, megasena 3.038 concursos
 frontend/src/views/LotteryView.vue
 frontend/src/api/lottery.js
 ```
 
 ### O truque que torna tudo viável
 
-Um jogo é uma máscara de bits (bit *i-1* ligado = dezena *i* marcada). Daí:
+Para universos de até 64 dezenas, um jogo é uma máscara de bits (bit *i-1*
+ligado = dezena *i* marcada). Daí:
 
 ```python
 acertos = popcount(jogo & sorteio)
 ```
 
 Com 25 dezenas, o espaço **completo** da Lotofácil — 3.268.760 jogos — ocupa
-13 MB como `uint32`. Enumerar leva 0,35 s; pontuar os 3,27 milhões contra um
-sorteio leva milissegundos. Por isso "escolher os melhores jogos" não é
-heurística aqui: é **busca exata sobre o espaço inteiro**.
+13 MB como `uint32`; os 50.063.860 da Mega-Sena, 400 MB como `uint64`.
+Enumerar leva de 0,35 s (Lotofácil) a 17 s (Mega). Por isso "escolher os
+melhores jogos" não é heurística aqui: é **busca exata sobre o espaço inteiro**.
 
-Features aditivas sobre as dezenas (soma, ímpares, primos, moldura do volante,
-dezenas por linha) são avaliadas por tabelas de lookup de 16 bits — dois
+A Quina tem 80 dezenas — não cabe em máscara de 64 bits. Para ela o motor usa
+a segunda representação: cada jogo é uma linha `(picks,)` de dezenas `uint8`
+(24.040.016 × 5 = 120 MB), e as mesmas operações saem por *gather*:
+
+```python
+acertos = membro[jogo].sum(axis=1)     # membro = bool por dezena
+feature = pesos[jogo].sum(axis=1)
+```
+
+Nos fechamentos, as dezenas do conjunto base são remapeadas para bits locais
+0..b-1 — então a construção funciona em qualquer universo, e a certificação
+continua exaustiva (a garantia depende só da interseção do sorteio com o base).
+
+Features aditivas sobre máscaras (soma, ímpares, primos, moldura, dezenas por
+linha, aniversário ≤31) são avaliadas por tabelas de lookup de 16 bits — dois
 `gather` por bloco, independentemente de quantos jogos existam.
 
 ### Os mundos paralelos
@@ -173,6 +194,29 @@ Todos os mundos convergem para ~9,0 acertos — exatamente o valor teórico
 todos), e o único caso com t > 2 é o que se espera ao testar oito hipóteses
 simultaneamente. O ROI é negativo em todos os cenários, como tem que ser.
 
+### Validação fora da amostra (out-of-sample)
+
+O modelo de popularidade é treinado em 80% do histórico e testado nos 20%
+finais — concursos que ele nunca viu. Correlação entre o score do modelo e o
+rateio realmente observado:
+
+| Modalidade | Faixa | Correlação | Ruído esperado | Veredito |
+|---|---|---|---|---|
+| Lotofácil | 15 acertos | +0,246 | ±0,039 | sinal real |
+| Lotofácil | 14 acertos | +0,505 | ±0,039 | sinal real |
+| Mega-Sena | 5 acertos (quina) | +0,505 | ±0,050 | sinal real |
+| Mega-Sena | 6 acertos (sena) | +0,065 | ±0,050 | inconclusivo* |
+| Quina | 4 acertos (quadra) | +0,509 | ±0,032 | sinal real |
+| Quina | 5 acertos | +0,017 | ±0,032 | inconclusivo* |
+
+\* Nas faixas principais de Mega e Quina quase todo concurso tem 0 ganhadores —
+não há estatística para validar. O sinal forte está nas faixas secundárias,
+que são justamente as rateadas com frequência.
+
+Na Mega, os coeficientes confirmam o viés de aniversário da literatura
+(Ziemba; Clotfelter & Cook): `soma −0,30` e `metade_baixa +0,24` — jogos de
+dezenas baixas (datas) têm sistematicamente mais ganhadores, logo rateiam pior.
+
 ### O que o modelo de popularidade encontrou
 
 Calibrado em 3.322 concursos com arrecadação publicada, o coeficiente mais
@@ -217,6 +261,12 @@ Mesmo custo, garantia estritamente melhor — verificado por enumeração dos
   registrado na resposta da API.
 - **Lotomania** não é suportada: C(100,50) é grande demais para enumerar; exigiria
   amostragem em vez de busca exaustiva.
+- **Requisitos por modalidade**: Lotofácil roda em qualquer VPS (~1 GB de pico);
+  Quina usa ~2,5 GB; Mega-Sena ~4 GB. Para rodar as três com folga, 8 GB de RAM.
+- **API nova**: `GET /api/lottery/oportunidades` (EV do próximo concurso de cada
+  modalidade), `GET /api/lottery/vies/<slug>` (monitor de viés, cacheado) e o
+  modo de carteira `"otimizado"` no `POST /api/lottery/estudo` (parâmetro
+  opcional `alvo_otimizacao`: faixa de pontos a maximizar).
 
 ---
 

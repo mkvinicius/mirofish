@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
-from .analyzer import FeatureSet, build_masks
+from .analyzer import FeatureSet, features_of_draws
 from .catalog import LotteryDef
 from .data_source import Draw
 
@@ -44,6 +44,9 @@ MODEL_FEATURES = [
     "primos",
     "metade_baixa",
     "multiplos_3",
+    # So existe em universos > 31 dezenas (Mega, Quina): quantas dezenas do
+    # jogo cabem numa data de aniversario. E o vies humano mais documentado.
+    "aniversario",
 ]
 
 
@@ -192,6 +195,9 @@ def _heuristic_model(lottery: LotteryDef, feature_names: List[str], reason: str)
         "primos": 0.05,
         "metade_baixa": 0.20,
         "multiplos_3": 0.0,
+        # Datas de aniversario (1-31) sao o vies de marcacao mais documentado
+        # da literatura (Ziemba; Clotfelter & Cook).
+        "aniversario": 0.30,
     }
     coefficients = np.array([priors.get(name, 0.0) for name in feature_names], dtype=np.float64)
     return PopularityModel(
@@ -242,8 +248,7 @@ def fit_popularity(
             f"(mínimo {min_draws})",
         )
 
-    masks = build_masks(usable, lottery)
-    feature_values = features.evaluate(masks)
+    feature_values = features_of_draws(usable, lottery, features)
     raw = np.column_stack([feature_values[name] for name in feature_names])
 
     feature_mean = raw.mean(axis=0)

@@ -36,7 +36,7 @@ logger = get_logger('mirofish.lottery.engine')
 
 RUNS_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'uploads', 'lottery_runs')
 
-PORTFOLIO_MODES = ("valor_esperado", "fechamento", "diversificado")
+PORTFOLIO_MODES = ("valor_esperado", "fechamento", "diversificado", "otimizado")
 
 
 @dataclass
@@ -58,6 +58,10 @@ class RunConfig:
     wheel_base_size: int = 18
     wheel_target_c: Optional[int] = None
     wheel_target_hits: Optional[int] = None
+
+    # Otimizador (modo "otimizado"): faixa alvo de P(bilhete >= alvo).
+    # None = segunda faixa mais baixa que paga premio.
+    optimize_target: Optional[int] = None
 
     # Dados
     sync_before_run: bool = True
@@ -202,7 +206,7 @@ class LotteryEngine:
             self.lottery,
             [g["dezenas"] for g in portfolio["jogos"]],
             portfolio["conjunto_base"],
-            space.masks,
+            space,
         )
 
         elapsed = (datetime.now() - started).total_seconds()
@@ -273,6 +277,8 @@ class LotteryEngine:
             games, base_numbers, notes = self._portfolio_wheel(ctx, n_games)
         elif mode == "diversificado":
             games, base_numbers, notes = self._portfolio_diverse(ctx, n_games)
+        elif mode == "otimizado":
+            games, base_numbers, notes = self._portfolio_optimized(ctx, n_games)
         else:
             games, base_numbers, notes = self._portfolio_value(ctx, n_games)
 
@@ -342,6 +348,20 @@ class LotteryEngine:
             "maximizar valor esperado.",
         ]
         return games, base, notes
+
+    def _portfolio_optimized(self, ctx: WorldContext, n_games: int):
+        """Carteira que maximiza P(bilhete >= faixa alvo) diretamente."""
+        from .portfolio import optimize_portfolio
+
+        source = "hibrido" if "hibrido" in self.config.worlds else self.config.worlds[0]
+        result = optimize_portfolio(
+            ctx,
+            n_games,
+            target_hits=self.config.optimize_target,
+            source_world=source,
+        )
+        base = sorted({n for g in result.games for n in g})
+        return result.games, base, result.notes
 
     def _portfolio_wheel(self, ctx: WorldContext, n_games: int):
         """Fechamento sobre as dezenas preferidas pelo mundo de valor esperado."""

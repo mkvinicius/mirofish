@@ -18,8 +18,10 @@ from ..lottery import combinatorics as cb
 from ..lottery.data_source import HistoryStore
 from ..lottery.economics import expected_value
 from ..lottery.engine import LotteryEngine, LotteryRunManager, RunConfig
+from ..lottery.bias import run_bias_test
+from ..lottery.opportunity import scan_opportunities
 from ..lottery.popularity import fit_popularity
-from ..lottery.wheeling import build_wheel, certify
+from ..lottery.wheeling import build_wheel, certify, enumeration_space
 from ..lottery.worlds import WORLD_REGISTRY
 from ..models.task import TaskManager, TaskStatus
 from ..utils.logger import get_logger
@@ -195,6 +197,7 @@ def start_study():
             wheel_base_size=int(data.get('fechamento_dezenas', 18)),
             wheel_target_c=data.get('fechamento_alvo_c'),
             wheel_target_hits=data.get('fechamento_alvo_pontos'),
+            optimize_target=data.get('alvo_otimizacao'),
             sync_before_run=bool(data.get('sincronizar', True)),
             seed=int(data.get('seed', 2024)),
         )
@@ -267,6 +270,45 @@ def delete_study(run_id: str):
     return _ok({"run_id": run_id, "removido": True})
 
 
+# --------------------------------------------------------------- oportunidades
+
+@lottery_bp.route('/oportunidades', methods=['GET'])
+def opportunities():
+    """Avaliacao economica do PROXIMO concurso de cada modalidade.
+
+    E a resposta a pergunta 'quando vale apostar': acumulacoes e concursos
+    especiais elevam o retorno esperado, e este painel calcula o valor com o
+    bolo anunciado pela Caixa e a arrecadacao tipica recente.
+    """
+    slugs = request.args.get('modalidades')
+    slug_list = [s.strip() for s in slugs.split(',')] if slugs else None
+    if slug_list:
+        unknown = [s for s in slug_list if s not in LOTTERIES]
+        if unknown:
+            return _error(f"Modalidades desconhecidas: {', '.join(unknown)}", 404)
+    return _ok(scan_opportunities(slug_list))
+
+
+@lottery_bp.route('/vies/<slug>', methods=['GET'])
+def bias_monitor(slug: str):
+    """Teste formal de vies fisico da modalidade (Monte Carlo, cacheado).
+
+    Tres criterios em conjunto: desvio de frequencia alem do acaso,
+    persistencia entre metades do historico e vantagem fora da amostra.
+    """
+    try:
+        lottery = get_lottery(slug)
+    except ValueError as exc:
+        return _error(str(exc), 404)
+
+    draws = HistoryStore(lottery).load()
+    if not draws:
+        return _error("Sem histórico em cache. Rode POST /api/lottery/sync.", 409)
+
+    n_sims = min(int(request.args.get('simulacoes', 2000)), 10000)
+    return _ok({"vies": run_bias_test(draws, lottery, n_sims=n_sims)})
+
+
 # ------------------------------------------------------------------ ferramentas
 
 @lottery_bp.route('/fechamento', methods=['POST'])
@@ -313,7 +355,7 @@ def wheel_endpoint():
     except ValueError as exc:
         return _error(str(exc))
 
-    space = cb.enumerate_masks(lottery.total_numbers, lottery.picks)
+    space = enumeration_space(lottery)
     certificate = certify(lottery, wheel.games, base_numbers, space)
 
     return _ok({"fechamento": wheel.to_dict(), "certificado": certificate.to_dict()})

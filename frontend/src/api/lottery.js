@@ -64,3 +64,15 @@ export function buildWheel(data) {
 export function checkGames(data) {
   return requestWithRetry(() => service({ url: '/api/lottery/conferir', method: 'post', data }))
 }
+
+/** Avaliação econômica do próximo concurso de cada modalidade. */
+export function getOpportunities() {
+  return requestWithRetry(() => service({ url: '/api/lottery/oportunidades', method: 'get' }))
+}
+
+/** Teste formal de viés físico da modalidade (Monte Carlo, cacheado). */
+export function getBias(slug) {
+  return requestWithRetry(() =>
+    service({ url: `/api/lottery/vies/${slug}`, method: 'get', timeout: 600000 })
+  )
+}

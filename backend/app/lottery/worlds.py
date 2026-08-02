@@ -40,8 +40,12 @@ class SpaceCache:
     """
 
     lottery: LotteryDef
-    masks: np.ndarray
     features: Dict[str, np.ndarray]
+    # Exatamente uma das duas representacoes esta presente:
+    #   masks  — 1 uint por jogo (universo <= 64 dezenas: Lotofacil, Mega)
+    #   combos — 1 linha (picks,) uint8 por jogo (universo > 64: Quina)
+    masks: Optional[np.ndarray] = None
+    combos: Optional[np.ndarray] = None
 
     @classmethod
     def build(cls, lottery: LotteryDef, feature_set: FeatureSet) -> "SpaceCache":
@@ -50,20 +54,56 @@ class SpaceCache:
                 f"{lottery.name} tem {lottery.total_combinations:,} combinações — "
                 f"grande demais para enumerar. Use amostragem."
             )
-        masks = cb.enumerate_masks(lottery.total_numbers, lottery.picks)
-        raw = feature_set.evaluate(masks)
+        if lottery.total_numbers <= 64:
+            masks = cb.enumerate_masks(lottery.total_numbers, lottery.picks)
+            raw = feature_set.evaluate(masks)
+            combos = None
+        else:
+            combos = cb.enumerate_combos(lottery.total_numbers, lottery.picks)
+            raw = feature_set.evaluate_combos(combos)
+            masks = None
         # float32 corta o cache pela metade sem perda relevante de precisao
         # nas features (todas sao inteiros pequenos ou somas de inteiros).
         features = {name: arr.astype(np.float32) for name, arr in raw.items()}
-        return cls(lottery=lottery, masks=masks, features=features)
+        return cls(lottery=lottery, features=features, masks=masks, combos=combos)
 
     @property
     def size(self) -> int:
-        return len(self.masks)
+        return len(self.masks) if self.masks is not None else len(self.combos)
 
     def memory_mb(self) -> float:
-        total = self.masks.nbytes + sum(a.nbytes for a in self.features.values())
-        return total / 1e6
+        rep = self.masks if self.masks is not None else self.combos
+        return (rep.nbytes + sum(a.nbytes for a in self.features.values())) / 1e6
+
+    # As tres operacoes de que os mundos precisam, independentes da
+    # representacao interna:
+
+    def eval_weights(self, weights: Sequence[float]) -> np.ndarray:
+        """Feature aditiva (soma de pesos por dezena) sobre todo o espaco."""
+        if self.masks is not None:
+            return cb.AdditiveFeature(weights, self.lottery.total_numbers).evaluate(self.masks)
+        return cb.combos_eval(self.combos, weights)
+
+    def hits(self, numbers: Sequence[int]) -> np.ndarray:
+        """Acertos de cada jogo do espaco contra um conjunto de dezenas."""
+        if self.masks is not None:
+            return cb.hits_against(self.masks, cb.mask_from_numbers(numbers))
+        return cb.combos_hits(self.combos, numbers, self.lottery.total_numbers)
+
+    def numbers_at(self, index: int) -> Tuple[int, ...]:
+        """Dezenas do jogo na posicao `index`."""
+        if self.masks is not None:
+            return cb.numbers_from_mask(int(self.masks[index]))
+        return tuple(int(x) for x in self.combos[index])
+
+    def take(self, indices: np.ndarray) -> "SpaceCache":
+        """Sub-espaco com os jogos indicados (usado na amostragem do backtest)."""
+        return SpaceCache(
+            lottery=self.lottery,
+            features={k: v[indices] for k, v in self.features.items()},
+            masks=self.masks[indices] if self.masks is not None else None,
+            combos=self.combos[indices] if self.combos is not None else None,
+        )
 
 
 @dataclass
@@ -84,11 +124,6 @@ class WorldContext:
     def rng(self) -> np.random.Generator:
         return np.random.default_rng(self.seed)
 
-    @property
-    def previous_mask(self) -> int:
-        """Mascara do ultimo concurso visivel."""
-        return cb.mask_from_numbers(self.analysis.last_draw_numbers)
-
     def repeats_vs_previous(self) -> np.ndarray:
         """Quantas dezenas cada jogo repete do ultimo concurso visivel.
 
@@ -96,7 +131,7 @@ class WorldContext:
         e e memoizada por contexto.
         """
         if self._repeat_cache is None:
-            self._repeat_cache = cb.hits_against(self.space.masks, self.previous_mask)
+            self._repeat_cache = self.space.hits(self.analysis.last_draw_numbers)
         return self._repeat_cache
 
     def support_mask(self, feature_names: Sequence[str]) -> np.ndarray:
@@ -144,13 +179,13 @@ class Candidate:
 # ------------------------------------------------------------------- selecao
 
 def select_diverse(
-    masks: np.ndarray,
+    space: SpaceCache,
     scores: np.ndarray,
     n_games: int,
     picks: int,
     max_overlap: Optional[int] = None,
     pool_size: int = 200_000,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> Tuple[List[Tuple[int, ...]], List[float]]:
     """Escolhe os melhores jogos garantindo diversidade entre eles.
 
     Pegar simplesmente o top-N por score produz N jogos quase identicos
@@ -159,50 +194,42 @@ def select_diverse(
     respeitando um limite de sobreposicao entre jogos ja escolhidos.
 
     Returns:
-        (mascaras escolhidas, scores correspondentes)
+        (jogos escolhidos como tuplas de dezenas, scores correspondentes)
     """
     if max_overlap is None:
         # Sobreposicao maxima padrao: ~60% das dezenas.
         max_overlap = max(1, int(picks * 0.6))
 
     pool_size = min(pool_size, len(scores))
-    # argpartition e O(n) — evita ordenar 3,27 milhoes de elementos.
+    # argpartition e O(n) — evita ordenar milhoes de elementos.
     pool_idx = np.argpartition(-scores, pool_size - 1)[:pool_size]
     pool_idx = pool_idx[np.argsort(-scores[pool_idx])]
 
-    pool_masks = masks[pool_idx]
-    pool_scores = scores[pool_idx]
+    chosen_games: List[Tuple[int, ...]] = []
+    chosen_sets: List[set] = []
+    chosen_scores: List[float] = []
+    skipped: List[int] = []
 
-    chosen: List[int] = []
-    chosen_masks = np.empty(n_games, dtype=masks.dtype)
-    n_chosen = 0
-
-    for i in range(len(pool_masks)):
-        candidate = pool_masks[i]
-        if n_chosen:
-            overlaps = cb.popcount(chosen_masks[:n_chosen] & candidate)
-            if overlaps.max() > max_overlap:
-                continue
-        chosen_masks[n_chosen] = candidate
-        chosen.append(i)
-        n_chosen += 1
-        if n_chosen >= n_games:
+    for idx in pool_idx:
+        numbers = space.numbers_at(int(idx))
+        as_set = set(numbers)
+        if chosen_sets and max(len(as_set & s) for s in chosen_sets) > max_overlap:
+            skipped.append(int(idx))
+            continue
+        chosen_games.append(numbers)
+        chosen_sets.append(as_set)
+        chosen_scores.append(float(scores[idx]))
+        if len(chosen_games) >= n_games:
             break
 
     # Se a restricao de diversidade foi rigida demais, completa com o topo.
-    if n_chosen < n_games:
-        already = set(chosen)
-        for i in range(len(pool_masks)):
-            if i in already:
-                continue
-            chosen_masks[n_chosen] = pool_masks[i]
-            chosen.append(i)
-            n_chosen += 1
-            if n_chosen >= n_games:
-                break
+    for idx in skipped:
+        if len(chosen_games) >= n_games:
+            break
+        chosen_games.append(space.numbers_at(idx))
+        chosen_scores.append(float(scores[idx]))
 
-    idx = np.array(chosen[:n_chosen], dtype=np.int64)
-    return chosen_masks[:n_chosen], pool_scores[idx]
+    return chosen_games, chosen_scores
 
 
 def _zscore(arr: np.ndarray) -> np.ndarray:
@@ -259,12 +286,11 @@ class ParallelWorld(ABC):
     def generate(self, ctx: WorldContext, n_games: int, max_overlap: Optional[int] = None) -> List[Candidate]:
         """Gera os `n_games` melhores jogos do mundo, com diversidade."""
         scores = self._final_scores(ctx)
-        masks, chosen_scores = select_diverse(
-            ctx.space.masks, scores, n_games, ctx.lottery.picks, max_overlap
+        games, chosen_scores = select_diverse(
+            ctx.space, scores, n_games, ctx.lottery.picks, max_overlap
         )
         out: List[Candidate] = []
-        for mask, score in zip(masks, chosen_scores):
-            numbers = cb.numbers_from_mask(int(mask))
+        for numbers, score in zip(games, chosen_scores):
             out.append(Candidate(
                 numbers=numbers,
                 score=float(score),
@@ -313,9 +339,7 @@ class FrequencyWorld(ParallelWorld):
     )
 
     def score(self, ctx: WorldContext) -> np.ndarray:
-        weights = ctx.analysis.relative_frequency
-        feature = cb.AdditiveFeature(weights, ctx.lottery.total_numbers)
-        return _zscore(feature.evaluate(ctx.space.masks))
+        return _zscore(ctx.space.eval_weights(ctx.analysis.relative_frequency))
 
     def explain(self, ctx: WorldContext, numbers: Sequence[int]) -> str:
         hot = set(ctx.analysis.hot_numbers(10))
@@ -337,8 +361,7 @@ class OverdueWorld(ParallelWorld):
         # Normaliza pelo atraso medio para nao privilegiar dezenas que
         # simplesmente saem menos.
         normalized = gaps / np.maximum(ctx.analysis.mean_gap, 1e-6)
-        feature = cb.AdditiveFeature(normalized, ctx.lottery.total_numbers)
-        return _zscore(feature.evaluate(ctx.space.masks))
+        return _zscore(ctx.space.eval_weights(normalized))
 
     def explain(self, ctx: WorldContext, numbers: Sequence[int]) -> str:
         overdue = set(ctx.analysis.overdue_numbers(10))
@@ -408,8 +431,7 @@ class MarkovWorld(ParallelWorld):
             # Log-probabilidade para que a soma sobre o jogo seja a
             # log-verossimilhanca do jogo sob o modelo de Markov.
             weights[i] = np.log(max(p, 1e-6))
-        feature = cb.AdditiveFeature(weights, ctx.lottery.total_numbers)
-        return _zscore(feature.evaluate(ctx.space.masks))
+        return _zscore(ctx.space.eval_weights(weights))
 
     def explain(self, ctx: WorldContext, numbers: Sequence[int]) -> str:
         prev = set(ctx.analysis.last_draw_numbers)

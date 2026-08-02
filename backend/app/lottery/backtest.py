@@ -157,11 +157,7 @@ def run_backtest(
         rng = np.random.default_rng(seed)
         idx = rng.choice(full_space.size, size=space_sample, replace=False)
         idx.sort()
-        eval_space = SpaceCache(
-            lottery=lottery,
-            masks=full_space.masks[idx],
-            features={k: v[idx] for k, v in full_space.features.items()},
-        )
+        eval_space = full_space.take(idx)
         sampled = True
     else:
         eval_space = full_space
@@ -188,7 +184,7 @@ def run_backtest(
 
         analysis = analyze(history, lottery, features)
         popularity = fit_popularity(history, lottery, features)
-        target_mask = cb.mask_from_numbers(target.numbers)
+        target_set = set(target.numbers)
 
         for world in worlds:
             ctx = WorldContext(
@@ -207,10 +203,7 @@ def run_backtest(
 
             draw_hits: List[int] = []
             for game in games:
-                hits = int(cb.popcount(
-                    np.array([cb.mask_from_numbers(game.numbers)], dtype=eval_space.masks.dtype)
-                    & eval_space.masks.dtype.type(target_mask)
-                )[0])
+                hits = len(target_set & set(game.numbers))
                 draw_hits.append(hits)
                 result.hits_histogram[hits] = result.hits_histogram.get(hits, 0) + 1
                 result.total_cost += game_price

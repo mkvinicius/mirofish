@@ -81,10 +81,19 @@ def masks_from_games(games: Sequence[Sequence[int]], dtype=np.uint32) -> np.ndar
 
 
 def dtype_for(total_numbers: int):
-    """Menor inteiro sem sinal que comporta `total_numbers` bits."""
+    """Menor inteiro sem sinal que comporta `total_numbers` bits.
+
+    Universos com mais de 64 dezenas (Quina: 80) nao cabem em mascara —
+    para eles o motor usa a representacao por indices (`enumerate_combos`).
+    """
     if total_numbers <= 32:
         return np.uint32
-    return np.uint64
+    if total_numbers <= 64:
+        return np.uint64
+    raise ValueError(
+        f"{total_numbers} dezenas nao cabem em mascara de 64 bits — "
+        f"use a representacao por indices (enumerate_combos)"
+    )
 
 
 # ------------------------------------------------------------------ enumeracao
@@ -137,6 +146,65 @@ def _enumerate_masks_incremental(total_numbers: int, picks: int, dtype) -> np.nd
         highest = new_high
 
     return masks
+
+
+# ------------------------------------------------- representacao por indices
+#
+# Para universos com mais de 64 dezenas (Quina: 80), um jogo e uma linha
+# (picks,) de dezenas uint8 em ordem crescente. As mesmas tres operacoes do
+# caminho por mascara existem aqui, via gather em vez de bit a bit:
+#
+#     acertos  = membro[jogo].sum(axis=1)          (membro = bool por dezena)
+#     feature  = pesos[jogo].sum(axis=1)
+#     consecut = (diff(jogo) == 1).sum(axis=1)
+
+
+def enumerate_combos(total_numbers: int, picks: int) -> np.ndarray:
+    """Enumera todas as combinacoes como matriz (N, picks) de dezenas uint8.
+
+    Mesma construcao por camadas da versao com mascara: cada parcial e
+    estendida apenas com dezenas maiores que a sua ultima, gerando cada
+    combinacao exatamente uma vez, em ordem lexicografica.
+    """
+    if total_numbers > 255:
+        raise ValueError("uint8 comporta ate 255 dezenas")
+
+    combos = np.arange(1, total_numbers - picks + 2, dtype=np.uint8).reshape(-1, 1)
+
+    for level in range(1, picks):
+        highest = combos[:, -1].astype(np.int64)
+        limit = total_numbers - (picks - level - 1)
+        counts = limit - highest
+        counts[counts < 0] = 0
+
+        repeated = np.repeat(combos, counts, axis=0)
+        offsets = np.arange(int(counts.sum()), dtype=np.int64) - np.repeat(
+            np.concatenate(([0], np.cumsum(counts)[:-1])), counts
+        )
+        new_col = (np.repeat(highest, counts) + 1 + offsets).astype(np.uint8)
+        combos = np.column_stack([repeated, new_col])
+
+    return combos
+
+
+def combos_hits(combos: np.ndarray, numbers: Iterable[int], total_numbers: int) -> np.ndarray:
+    """Acertos de cada linha contra um conjunto de dezenas."""
+    member = np.zeros(total_numbers + 1, dtype=np.uint8)
+    for n in numbers:
+        member[int(n)] = 1
+    return member[combos].sum(axis=1, dtype=np.uint8)
+
+
+def combos_eval(combos: np.ndarray, weights: Sequence[float]) -> np.ndarray:
+    """Soma de pesos por dezena para cada linha (feature aditiva)."""
+    table = np.zeros(len(weights) + 1, dtype=np.float64)
+    table[1:] = np.asarray(weights, dtype=np.float64)
+    return table[combos].sum(axis=1)
+
+
+def combos_consecutive_pairs(combos: np.ndarray) -> np.ndarray:
+    """Pares de dezenas consecutivas em cada linha (linhas ja ordenadas)."""
+    return (np.diff(combos.astype(np.int16), axis=1) == 1).sum(axis=1).astype(np.uint8)
 
 
 # -------------------------------------------------------- features aditivas

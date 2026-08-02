@@ -92,6 +92,36 @@
 
       <!-- =========================== RESULTADOS =========================== -->
       <section class="results">
+        <!-- ONDE VALE APOSTAR HOJE (sempre visível) -->
+        <div class="card opp-card" v-if="opportunities">
+          <div class="card-head">
+            <h2>Onde vale apostar hoje</h2>
+            <span class="card-meta">próximo concurso de cada modalidade</span>
+          </div>
+          <table class="rank-table">
+            <thead>
+              <tr>
+                <th>Modalidade</th><th>Concurso</th><th>Data</th>
+                <th>Bolo principal</th><th>Retorno esperado</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="o in opportunities.modalidades" :key="o.modalidade">
+                <td>{{ o.nome }}<span v-if="o.acumulado" class="acc-tag">acumulou</span></td>
+                <td class="num">{{ o.proximo_concurso }}</td>
+                <td class="num">{{ o.data }}</td>
+                <td class="num">R$ {{ formatInt(Math.round(o.bolo_principal)) }}</td>
+                <td class="num" :class="o.retorno_esperado.taxa >= 1 ? 'good' : 'bad'">
+                  {{ (o.retorno_esperado.taxa * 100).toFixed(1) }}%
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <ul class="notes">
+            <li v-for="(v, i) in opportunities.leitura" :key="i">{{ v }}</li>
+          </ul>
+        </div>
+
         <div v-if="!study" class="empty-state">
           <h1>Mundos paralelos para loterias</h1>
           <p>
@@ -242,6 +272,41 @@
             </table>
           </div>
 
+          <!-- MONITOR DE VIÉS -->
+          <div class="card" v-if="bias">
+            <div class="card-head">
+              <h2>Monitor de viés físico</h2>
+              <span class="card-meta">
+                {{ formatInt(bias.simulacoes) }} históricos honestos simulados
+              </span>
+            </div>
+            <table class="rank-table">
+              <thead>
+                <tr><th>Teste</th><th>Valor</th><th>p-valor</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Desvio das frequências (T)</td>
+                  <td class="num">{{ bias.frequencia.T }} (nulo: {{ bias.frequencia.T_nulo_media }})</td>
+                  <td class="num">{{ bias.frequencia.p_valor }}</td>
+                </tr>
+                <tr>
+                  <td>Persistência entre metades (r)</td>
+                  <td class="num">{{ bias.persistencia.r_split_half }}</td>
+                  <td class="num">{{ bias.persistencia.p_valor }}</td>
+                </tr>
+                <tr>
+                  <td>Vantagem fora da amostra</td>
+                  <td class="num">{{ bias.vantagem_fora_da_amostra.acertos_extras_por_jogo }} acerto/jogo</td>
+                  <td class="num">{{ bias.vantagem_fora_da_amostra.p_valor }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <ul class="statements">
+              <li v-for="(v, i) in bias.veredito" :key="i">{{ v }}</li>
+            </ul>
+          </div>
+
           <!-- AVISOS -->
           <div class="card warning-card">
             <h2>Leia antes de apostar</h2>
@@ -260,7 +325,8 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   listLotteries, listWorlds, getHistory,
-  startStudy, getTask, getStudy
+  startStudy, getTask, getStudy,
+  getOpportunities, getBias
 } from '../api/lottery'
 
 const router = useRouter()
@@ -269,6 +335,8 @@ const lotteries = ref([])
 const worlds = ref([])
 const history = ref(null)
 const study = ref(null)
+const opportunities = ref(null)
+const bias = ref(null)
 
 const running = ref(false)
 const progress = ref(0)
@@ -278,6 +346,7 @@ const error = ref('')
 let pollTimer = null
 
 const modes = [
+  { value: 'otimizado', label: 'Otimizado', hint: 'maximiza P(prêmio) por concurso' },
   { value: 'valor_esperado', label: 'Valor esperado', hint: 'jogos nas regiões menos disputadas' },
   { value: 'fechamento', label: 'Fechamento', hint: 'garante prêmios secundários' },
   { value: 'diversificado', label: 'Diversificado', hint: 'divide entre os mundos' }
@@ -286,7 +355,7 @@ const modes = [
 const config = ref({
   modalidade: 'lotofacil',
   n_jogos: 8,
-  modo: 'valor_esperado',
+  modo: 'otimizado',
   mundos: [],
   rodar_backtest: true,
   backtest_concursos: 60,
@@ -354,6 +423,22 @@ async function loadHistory() {
   }
 }
 
+async function loadOpportunities() {
+  try {
+    opportunities.value = await getOpportunities()
+  } catch (e) {
+    opportunities.value = null // painel é acessório; sem rede, segue sem ele
+  }
+}
+
+async function loadBias() {
+  try {
+    bias.value = (await getBias(config.value.modalidade)).vies
+  } catch (e) {
+    bias.value = null
+  }
+}
+
 async function runStudy() {
   error.value = ''
   study.value = null
@@ -375,6 +460,7 @@ async function runStudy() {
           study.value = res.estudo
           running.value = false
           progressMsg.value = ''
+          loadBias() // roda depois do estudo para não competir por CPU
         } else if (task.status === 'failed') {
           stopPolling()
           error.value = task.error || 'O estudo falhou'
@@ -399,7 +485,10 @@ function stopPolling() {
   }
 }
 
-onMounted(loadReference)
+onMounted(() => {
+  loadReference()
+  loadOpportunities()
+})
 onUnmounted(stopPolling)
 </script>
 
@@ -739,6 +828,19 @@ onUnmounted(stopPolling)
 
 .warning-card { border-color: var(--orange); background: rgba(255, 69, 0, 0.035); }
 .warning-card h2 { margin-bottom: 6px; }
+
+.opp-card { border-color: var(--black); }
+
+.acc-tag {
+  margin-left: 8px;
+  padding: 1px 7px;
+  font-size: 9.5px;
+  border-radius: 8px;
+  background: rgba(10, 125, 52, 0.12);
+  color: var(--green);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
 
 @media (max-width: 900px) {
   .content { grid-template-columns: 1fr; }

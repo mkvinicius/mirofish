@@ -83,6 +83,12 @@ class FeatureSet:
             "multiplos_3": cb.count_feature(multiples_of_3, n),
         }
 
+        # Vies de aniversario: dezenas 1-31 sao marcaveis como datas e, em
+        # universos grandes (Mega: 60, Quina: 80), sao sistematicamente mais
+        # apostadas. Em universos <=31 a feature seria constante (inutil).
+        if n > 31:
+            self._features["aniversario"] = cb.count_feature(range(1, 32), n)
+
         # Contagem por linha do volante: captura o vies de quem marca o
         # cartao em faixas horizontais.
         for row in range(lottery.grid_rows):
@@ -97,6 +103,10 @@ class FeatureSet:
     def names(self) -> List[str]:
         return list(self._features) + ["consecutivos"]
 
+    def weights_of(self, name: str) -> np.ndarray:
+        """Pesos por dezena de uma feature aditiva (para o caminho por indices)."""
+        return self._features[name].weights
+
     def evaluate(self, masks: np.ndarray) -> Dict[str, np.ndarray]:
         """Calcula todas as features para um array de mascaras."""
         out = {name: feat.evaluate(masks) for name, feat in self._features.items()}
@@ -105,14 +115,26 @@ class FeatureSet:
         ).astype(np.float64)
         return out
 
+    def evaluate_combos(self, combos: np.ndarray) -> Dict[str, np.ndarray]:
+        """Mesmas features, para a representacao por indices (universo > 64)."""
+        out = {
+            name: cb.combos_eval(combos, feat.weights)
+            for name, feat in self._features.items()
+        }
+        out["consecutivos"] = cb.combos_consecutive_pairs(combos).astype(np.float64)
+        return out
+
+    def evaluate_games(self, games: Sequence[Sequence[int]]) -> Dict[str, np.ndarray]:
+        """Features de uma lista de jogos, escolhendo a representacao certa."""
+        combos = np.array([sorted(int(x) for x in g) for g in games], dtype=np.uint8)
+        return self.evaluate_combos(combos)
+
     def evaluate_one(self, numbers: Sequence[int]) -> Dict[str, float]:
         """Versao conveniente para um unico jogo."""
-        masks = np.array([cb.mask_from_numbers(numbers)], dtype=cb.dtype_for(self.lottery.total_numbers))
-        return {k: float(v[0]) for k, v in self.evaluate(masks).items()}
+        return {k: float(v[0]) for k, v in self.evaluate_games([numbers]).items()}
 
-    def summarize(self, masks: np.ndarray) -> Dict[str, FeatureStats]:
-        """Resumo estatistico de cada feature sobre um conjunto de jogos."""
-        values = self.evaluate(masks)
+    def summarize_values(self, values: Dict[str, np.ndarray]) -> Dict[str, FeatureStats]:
+        """Resumo estatistico a partir de features ja calculadas."""
         stats: Dict[str, FeatureStats] = {}
         for name, arr in values.items():
             stats[name] = FeatureStats(
@@ -216,9 +238,25 @@ def build_matrix(draws: Sequence[Draw], lottery: LotteryDef) -> np.ndarray:
 
 
 def build_masks(draws: Sequence[Draw], lottery: LotteryDef) -> np.ndarray:
-    """Array de mascaras dos sorteios historicos."""
+    """Array de mascaras dos sorteios historicos (universo <= 64 dezenas)."""
     dtype = cb.dtype_for(lottery.total_numbers)
     return np.array([cb.mask_from_numbers(d.numbers) for d in draws], dtype=dtype)
+
+
+def build_combos(draws: Sequence[Draw], lottery: LotteryDef) -> np.ndarray:
+    """Matriz (n, picks) das dezenas historicas (qualquer universo)."""
+    return np.array([d.numbers for d in draws], dtype=np.uint8)
+
+
+def features_of_draws(
+    draws: Sequence[Draw],
+    lottery: LotteryDef,
+    feature_set: "FeatureSet",
+) -> Dict[str, np.ndarray]:
+    """Features dos sorteios historicos, na representacao adequada ao universo."""
+    if lottery.total_numbers <= 64:
+        return feature_set.evaluate(build_masks(draws, lottery))
+    return feature_set.evaluate_combos(build_combos(draws, lottery))
 
 
 def analyze(
@@ -236,7 +274,6 @@ def analyze(
 
     n = lottery.total_numbers
     matrix = build_matrix(draws, lottery)
-    masks = build_masks(draws, lottery)
 
     frequency = matrix.sum(axis=0).astype(np.float64)
     relative = frequency / len(draws)
@@ -295,6 +332,8 @@ def analyze(
         repeat_counts=repeat_counts,
         markov_given_present=markov_present,
         markov_given_absent=markov_absent,
-        feature_stats=features.summarize(masks),
+        feature_stats=features.summarize_values(
+            features_of_draws(draws, lottery, features)
+        ),
         last_draw_numbers=draws[-1].numbers,
     )
