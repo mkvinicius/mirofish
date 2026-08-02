@@ -76,3 +76,20 @@ export function getBias(slug) {
     service({ url: `/api/lottery/vies/${slug}`, method: 'get', timeout: 600000 })
   )
 }
+
+/** Caderneta: lista apostas conferidas. atualizar=true baixa sorteios novos antes. */
+export function listMyBets(atualizar = false) {
+  return service({
+    url: '/api/lottery/apostas', method: 'get',
+    params: atualizar ? { atualizar: 1 } : {}
+  })
+}
+
+/** Registra na caderneta os jogos apostados na Caixa. */
+export function addMyBet(data) {
+  return service({ url: '/api/lottery/apostas', method: 'post', data })
+}
+
+export function deleteMyBet(betId) {
+  return service({ url: `/api/lottery/apostas/${betId}`, method: 'delete' })
+}

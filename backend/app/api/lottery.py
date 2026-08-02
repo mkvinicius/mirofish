@@ -19,6 +19,7 @@ from ..lottery.data_source import HistoryStore
 from ..lottery.economics import expected_value
 from ..lottery.engine import LotteryEngine, LotteryRunManager, RunConfig
 from ..lottery.bias import run_bias_test
+from ..lottery import ledger
 from ..lottery.opportunity import scan_opportunities
 from ..lottery.popularity import fit_popularity
 from ..lottery.wheeling import build_wheel, certify, enumeration_space
@@ -307,6 +308,40 @@ def bias_monitor(slug: str):
 
     n_sims = min(int(request.args.get('simulacoes', 2000)), 10000)
     return _ok({"vies": run_bias_test(draws, lottery, n_sims=n_sims)})
+
+
+# ------------------------------------------------------------------- caderneta
+
+@lottery_bp.route('/apostas', methods=['GET'])
+def list_my_bets():
+    """Caderneta: apostas registradas, conferidas contra os sorteios oficiais.
+
+    Com ?atualizar=1, tenta baixar os concursos que faltam antes de conferir.
+    """
+    sync_pending = request.args.get('atualizar') in ('1', 'true')
+    return _ok(ledger.list_bets(sync_pending=sync_pending))
+
+
+@lottery_bp.route('/apostas', methods=['POST'])
+def add_my_bet():
+    """Registra na caderneta os jogos que o usuario apostou na Caixa."""
+    data = request.get_json(silent=True) or {}
+    try:
+        record = ledger.add_bet(
+            modalidade=data.get('modalidade', 'lotofacil'),
+            jogos=data.get('jogos') or [],
+            concurso=data.get('concurso'),
+        )
+    except ValueError as exc:
+        return _error(str(exc))
+    return _ok({"aposta": record}, 201)
+
+
+@lottery_bp.route('/apostas/<bet_id>', methods=['DELETE'])
+def delete_my_bet(bet_id: str):
+    if not ledger.delete_bet(bet_id):
+        return _error("Aposta não encontrada", 404)
+    return _ok({"id": bet_id, "removida": True})
 
 
 # ------------------------------------------------------------------ ferramentas

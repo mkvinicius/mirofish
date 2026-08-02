@@ -122,6 +122,88 @@
           </ul>
         </div>
 
+        <!-- MINHAS APOSTAS (caderneta, sempre visível) -->
+        <div class="card ledger-card">
+          <div class="card-head">
+            <h2>Conferir minhas apostas</h2>
+            <span class="card-meta" v-if="ledger">
+              {{ ledger.resumo.n_apostas }} aposta(s) ·
+              gasto R$ {{ ledger.resumo.gasto_total.toFixed(2) }} ·
+              prêmios R$ {{ ledger.resumo.premio_total.toFixed(2) }} ·
+              <strong :class="ledger.resumo.saldo >= 0 ? 'good' : 'bad'">
+                saldo R$ {{ ledger.resumo.saldo.toFixed(2) }}
+              </strong>
+            </span>
+          </div>
+
+          <!-- formulário de registro -->
+          <div class="ledger-form">
+            <div class="ledger-row">
+              <select v-model="betForm.modalidade">
+                <option v-for="m in lotteries" :key="m.slug" :value="m.slug">{{ m.nome }}</option>
+              </select>
+              <input
+                type="number" min="1" v-model.number="betForm.concurso"
+                :placeholder="`concurso (vazio = próximo)`"
+              />
+              <button
+                v-if="study && study.boletim"
+                class="ghost-btn" @click="fillFromStudy"
+                title="Preenche com os jogos do último estudo"
+              >Usar jogos do boletim</button>
+            </div>
+            <textarea
+              v-model="betForm.texto" rows="3"
+              placeholder="Um jogo por linha, dezenas separadas por espaço ou vírgula.
+Ex.: 01 04 05 06 13 14 15 16 17 18 19 20 21 22 25"
+            ></textarea>
+            <div class="ledger-row">
+              <button class="ghost-btn strong" @click="registerBet" :disabled="!betForm.texto.trim()">
+                Registrar aposta
+              </button>
+              <button class="ghost-btn" @click="refreshLedger(true)">Atualizar resultados</button>
+              <span v-if="betMsg" class="bet-msg" :class="{ bad: betMsgIsError }">{{ betMsg }}</span>
+            </div>
+          </div>
+
+          <!-- extrato -->
+          <div v-if="ledger && ledger.apostas.length" class="ledger-table-wrap">
+            <table class="rank-table">
+              <thead>
+                <tr>
+                  <th>Registrada</th><th>Modalidade</th><th>Concurso</th><th>Jogos</th>
+                  <th>Custo</th><th>Melhor jogo</th><th>Prêmio</th><th>Saldo</th><th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="a in ledger.apostas" :key="a.id">
+                  <td>{{ (a.criado_em || '').slice(0, 10) }}</td>
+                  <td>{{ lotteryName(a.modalidade) }}</td>
+                  <td class="num">{{ a.concurso }}</td>
+                  <td class="num">{{ a.jogos.length }}</td>
+                  <td class="num">R$ {{ a.custo.toFixed(2) }}</td>
+                  <template v-if="a.status === 'conferida'">
+                    <td class="num">{{ a.resultado.melhor_jogo }} pts</td>
+                    <td class="num">R$ {{ a.resultado.premio_total.toFixed(2) }}</td>
+                    <td class="num" :class="a.resultado.saldo >= 0 ? 'good' : 'bad'">
+                      R$ {{ a.resultado.saldo.toFixed(2) }}
+                    </td>
+                  </template>
+                  <template v-else>
+                    <td colspan="3" class="pending">aguardando sorteio</td>
+                  </template>
+                  <td><button class="del-btn" @click="removeBet(a.id)" title="Excluir">×</button></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p v-else class="card-sub" style="margin-top:12px">
+            Nenhuma aposta registrada ainda. Depois de jogar na Caixa, registre os
+            jogos aqui — a conferência contra cada sorteio é automática, e o saldo
+            acumulado é o número mais honesto desta página.
+          </p>
+        </div>
+
         <div v-if="!study" class="empty-state">
           <h1>Mundos paralelos para loterias</h1>
           <p>
@@ -326,7 +408,8 @@ import { useRouter } from 'vue-router'
 import {
   listLotteries, listWorlds, getHistory,
   startStudy, getTask, getStudy,
-  getOpportunities, getBias
+  getOpportunities, getBias,
+  listMyBets, addMyBet, deleteMyBet
 } from '../api/lottery'
 
 const router = useRouter()
@@ -337,6 +420,10 @@ const history = ref(null)
 const study = ref(null)
 const opportunities = ref(null)
 const bias = ref(null)
+const ledger = ref(null)
+const betForm = ref({ modalidade: 'lotofacil', concurso: null, texto: '' })
+const betMsg = ref('')
+const betMsgIsError = ref(false)
 
 const running = ref(false)
 const progress = ref(0)
@@ -439,6 +526,70 @@ async function loadBias() {
   }
 }
 
+const lotteryName = (slug) =>
+  lotteries.value.find(l => l.slug === slug)?.nome || slug
+
+async function refreshLedger(atualizar = false) {
+  try {
+    ledger.value = await listMyBets(atualizar)
+    if (atualizar) showBetMsg('Resultados atualizados.')
+  } catch (e) {
+    showBetMsg(`Falha ao carregar a caderneta: ${e.message}`, true)
+  }
+}
+
+function showBetMsg(msg, isError = false) {
+  betMsg.value = msg
+  betMsgIsError.value = isError
+  setTimeout(() => { betMsg.value = '' }, 6000)
+}
+
+function parseGamesText(text) {
+  return text.split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    .map(line => line.split(/[\s,;]+/).map(Number).filter(n => !isNaN(n)))
+    .filter(g => g.length > 0)
+}
+
+function fillFromStudy() {
+  const jogos = study.value?.boletim?.jogos || []
+  betForm.value.modalidade = study.value?.modalidade?.slug || betForm.value.modalidade
+  betForm.value.texto = jogos
+    .map(j => j.dezenas.map(n => String(n).padStart(2, '0')).join(' '))
+    .join('\n')
+}
+
+async function registerBet() {
+  const jogos = parseGamesText(betForm.value.texto)
+  if (!jogos.length) {
+    showBetMsg('Nenhum jogo reconhecido no texto.', true)
+    return
+  }
+  try {
+    await addMyBet({
+      modalidade: betForm.value.modalidade,
+      concurso: betForm.value.concurso || undefined,
+      jogos
+    })
+    betForm.value.texto = ''
+    betForm.value.concurso = null
+    showBetMsg(`${jogos.length} jogo(s) registrados.`)
+    refreshLedger()
+  } catch (e) {
+    showBetMsg(e.message, true)
+  }
+}
+
+async function removeBet(id) {
+  try {
+    await deleteMyBet(id)
+    refreshLedger()
+  } catch (e) {
+    showBetMsg(e.message, true)
+  }
+}
+
 async function runStudy() {
   error.value = ''
   study.value = null
@@ -488,6 +639,7 @@ function stopPolling() {
 onMounted(() => {
   loadReference()
   loadOpportunities()
+  refreshLedger()
 })
 onUnmounted(stopPolling)
 </script>
@@ -830,6 +982,70 @@ onUnmounted(stopPolling)
 .warning-card h2 { margin-bottom: 6px; }
 
 .opp-card { border-color: var(--black); }
+
+.ledger-card { border-style: dashed; }
+
+.ledger-form { margin-top: 8px; }
+
+.ledger-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.ledger-row select,
+.ledger-row input {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.ledger-row input { width: 210px; }
+
+.ledger-form textarea {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12.5px;
+  resize: vertical;
+  box-sizing: border-box;
+  margin-bottom: 8px;
+}
+
+.ghost-btn {
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--white);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12.5px;
+}
+
+.ghost-btn.strong { border-color: var(--orange); color: var(--orange); font-weight: 600; }
+.ghost-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.bet-msg { font-size: 12px; color: var(--green); }
+.bet-msg.bad { color: #c0392b; }
+
+.ledger-table-wrap { overflow-x: auto; margin-top: 6px; }
+
+.pending { color: var(--gray-text); font-style: italic; }
+
+.del-btn {
+  border: none;
+  background: none;
+  color: #c0392b;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 6px;
+}
 
 .acc-tag {
   margin-left: 8px;

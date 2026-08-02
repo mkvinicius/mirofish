@@ -62,3 +62,9 @@ data/
 # funcionar offline e evita rebaixar a API da Caixa a cada clone.
 !backend/data/
 !backend/data/**
+
+# Dados pessoais e logs do usuario — NUNCA versionar
+backend/data/minhas_apostas.jsonl
+backend/data/alertas.log
+backend/data/alertas_cron.log
+backend/data/oportunidades_diario.jsonl

@@ -238,7 +238,23 @@ Cartões informativos: de onde vêm os jogos anti-populares, quanto a loteria
 devolve por real, e a vigilância estatística da máquina de sorteio. Não
 exigem nenhuma ação — são a prestação de contas do sistema.
 
-### 4.7 "Leia antes de apostar"
+### 4.7 Conferir minhas apostas (a caderneta)
+
+O cartão tracejado no topo dos resultados é o seu **extrato pessoal**:
+
+1. Depois de registrar os jogos na Caixa, volte à tela e registre-os aqui
+   também: escolha a modalidade, deixe o campo de concurso vazio (assume o
+   próximo sorteio) e digite um jogo por linha — ou, se acabou de rodar um
+   estudo, clique em **"Usar jogos do boletim"** que preenche sozinho.
+2. Clique **Registrar aposta**.
+3. Depois de cada sorteio, clique **"Atualizar resultados"**: o sistema baixa
+   o resultado oficial e confere jogo a jogo — acertos, prêmio real da faixa
+   e o saldo da aposta.
+4. O topo do cartão mostra o acumulado da sua jornada: total gasto, total de
+   prêmios e o **saldo** — o número mais honesto da página inteira. Se ele
+   estiver muito vermelho, é a própria matemática sugerindo uma pausa.
+
+### 4.8 "Leia antes de apostar"
 
 As quatro regras do jogo honesto. A mais importante: **aposte apenas o que
 puder perder integralmente** — o sistema otimiza as migalhas recuperáveis,
@@ -253,9 +269,10 @@ mas a loteria continua sendo, por desenho, um jogo de perda esperada.
    Lotofácil da Independência e da Mega da Virada): abra o painel, rode um
    estudo **Otimizado** na modalidade da janela e jogue os jogos do boletim,
    dentro do orçamento que você definiu **antes** de abrir a tela.
-3. Depois do sorteio, confira na tela de histórico — ou aceite o resultado
-   mais provável (perder) com a tranquilidade de quem pagou o menor pedágio
-   matematicamente possível.
+3. Registre na caderneta ("Conferir minhas apostas") os jogos que apostou.
+4. Depois do sorteio, clique "Atualizar resultados" na caderneta e aceite o
+   que o saldo mostrar — na maioria das vezes, uma perda pequena paga com a
+   tranquilidade de quem pagou o menor pedágio matematicamente possível.
 
 ---
 
