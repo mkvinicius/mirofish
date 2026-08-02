@@ -1,0 +1,21 @@
+# Servico systemd do backend MiroFish Loterias.
+# Instalacao (como root):
+#   cp /opt/mirofish/deploy/mirofish-loteria.service /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now mirofish-loteria
+[Unit]
+Description=MiroFish Loterias (backend Flask, modo loteria)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/mirofish/backend
+Environment=MIROFISH_MODE=loteria
+Environment=FLASK_DEBUG=False
+ExecStart=/opt/mirofish/backend/.venv/bin/python run.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
